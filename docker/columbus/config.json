@@ -1,0 +1,27 @@
+{
+  "networkID": 1001,
+  "logDirectory": "/var/log/magellan-columbus",
+  "metricsListenAddr": "",
+  "listenAddr": ":8080",
+  "features": [
+  ],
+  "caminogo": "http://camino:9650",
+  "nodeInstance": "default",
+  "cchainId": "G52TJLLbDSxYXsijNMpKFB6kAyDVRd9DGWVWYBh86Z8sEXm1i",
+  "chains": {
+    "11111111111111111111111111111111LpoYY": {
+      "id": "11111111111111111111111111111111LpoYY",
+      "vmType": "pvm"
+    },
+    "28Pp3JZJBABUmFQcC9ZXPjuDS6WVX8LeQP9y3DvpCXGiNiTQFV": {
+      "id": "28Pp3JZJBABUmFQcC9ZXPjuDS6WVX8LeQP9y3DvpCXGiNiTQFV",
+      "vmType": "avm"
+    }
+  },
+  "services": {
+    "db": {
+      "dsn": "root:password@tcp(mysql:3306)/magellan_columbus",
+      "driver": "mysql"
+    }
+  }
+}

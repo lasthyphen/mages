@@ -1,0 +1,43 @@
+version: '3'
+volumes:
+  camino-data:
+  camino-ipcs:
+networks:
+  services:
+    external:
+      name: magellan_services
+services:
+  camino:
+    env_file:
+      - standalone.env
+    image: "c4tplatform/caminogo:v0.1.0"
+    command: /bin/sh -cx "exec /caminogo/build/caminogo
+      --config-file=/opt/config.json
+      --network-id=$${NETWORKID}
+      "
+    ports:
+      - "9650:9650"
+    volumes:
+      - camino-data:/var/lib/camino
+      - ./../caminogo_config.json:/opt/config.json
+      - ./../caminogo_chain_config:/opt/caminogo
+      - camino-ipcs:/tmp
+    depends_on:
+      - indexer
+    restart: always
+  indexer: &magellan-app
+    image: "c4tplatform/magellan:v0.0.0"
+    command: ["stream", "indexer", "-c", "/opt/config.json"]
+    networks:
+      - services
+    external_links:
+      - mysql
+    volumes:
+      - camino-ipcs:/tmp
+      - ./config.standalone.json:/opt/config.json
+    restart: on-failure
+  api:
+    <<: *magellan-app
+    command: ["api", "-c", "/opt/config.json"]
+    ports:
+      - 8080:8080

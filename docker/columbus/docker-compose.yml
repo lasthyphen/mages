@@ -1,0 +1,62 @@
+version: '3.5'
+volumes:
+  camino-ipcs:
+services:
+  mysql:
+    image: "mysql:8.0.26"
+    volumes:
+      - /var/lib/magellan/mysql:/var/lib/mysql
+      - ./../my.cnf:/etc/mysql/my.cnf
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: magellan_columbus
+    restart: on-failure
+  migrate:
+    image: "migrate/migrate:v4.14.1"
+    volumes:
+      - ../../services/db/migrations:/migrations
+    depends_on:
+      - mysql
+    entrypoint: ["/bin/sh"]
+    command: |
+      -c 'while ! migrate -path=/migrations/ -database "mysql://root:password@tcp(mysql:3306)/magellan_columbus" up; do
+        sleep 1
+      done'
+    restart: on-failure
+  camino:
+    env_file:
+      - columbus.env
+    image: "c4tplatform/caminogo:v0.1.0"
+    command: /bin/sh -cx "exec /caminogo/build/caminogo
+      --config-file=/opt/config.json
+      --network-id=$${NETWORKID}
+      "
+    ports:
+      - "9650:9650"
+    volumes:
+      - /var/lib/magellan/camino:/var/lib/camino
+      - ./../caminogo_config.json:/opt/config.json
+      - ./../caminogo_chain_config:/opt/caminogo
+      - caminogo-ipcs:/tmp
+    depends_on:
+      - indexer
+    restart: always
+  indexer: &magellan-app
+    image: "c4tplatform/magellan:v0.0.0"
+    command: ["stream", "indexer", "-c", "/opt/config.json"]
+    external_links:
+      - mysql
+    depends_on:
+      - mysql
+      - migrate
+    volumes:
+      - camino-ipcs:/tmp
+      - ./config.json:/opt/config.json
+    restart: on-failure
+  api:
+    <<: *magellan-app
+    command: ["api", "-c", "/opt/config.json"]
+    ports:
+      - 8080:8080
