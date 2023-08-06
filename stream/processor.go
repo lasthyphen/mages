@@ -16,7 +16,6 @@ package stream
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/lasthyphen/mages/cfg"
@@ -32,8 +31,10 @@ var (
 	ErrNoMessage = errors.New("no message")
 )
 
-type ProcessorFactoryChainDB func(*servicesctrl.Control, cfg.Config, string, string) (ProcessorDB, error)
-type ProcessorFactoryInstDB func(*servicesctrl.Control, cfg.Config) (ProcessorDB, error)
+type (
+	ProcessorFactoryChainDB func(*servicesctrl.Control, cfg.Config, string, string) (ProcessorDB, error)
+	ProcessorFactoryInstDB  func(*servicesctrl.Control, cfg.Config) (ProcessorDB, error)
+)
 
 type ProcessorDB interface {
 	Process(*utils.Connections, *db.TxPool) error
@@ -59,24 +60,4 @@ func UpdateTxPool(
 		sc.Enqueue(txPool)
 	}
 	return err
-}
-
-func TrimNL(msg string) string {
-	oldmsg := msg
-	for {
-		msg = strings.TrimPrefix(msg, "\n")
-		if msg == oldmsg {
-			break
-		}
-		oldmsg = msg
-	}
-	oldmsg = msg
-	for {
-		msg = strings.TrimSuffix(msg, "\n")
-		if msg == oldmsg {
-			break
-		}
-		oldmsg = msg
-	}
-	return msg
 }

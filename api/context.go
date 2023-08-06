@@ -21,7 +21,10 @@ import (
 	"net/http"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/lasthyphen/dijetsnodego/ids"
+	"github.com/lasthyphen/mages/caching"
 	"github.com/lasthyphen/mages/cfg"
 	"github.com/lasthyphen/mages/services/indexes/djtx"
 	"github.com/lasthyphen/mages/services/indexes/params"
@@ -30,11 +33,9 @@ import (
 	"github.com/gocraft/web"
 )
 
-var (
-	// ErrCacheableFnFailed is returned when the execution of a CacheableFn
-	// fails.
-	ErrCacheableFnFailed = errors.New("failed to load resource")
-)
+// ErrCacheableFnFailed is returned when the execution of a CacheableFn
+// fails.
+var ErrCacheableFnFailed = errors.New("failed to load resource")
 
 // Context is the base context for APIs in the magellan systems
 type Context struct {
@@ -43,7 +44,7 @@ type Context struct {
 	networkID   uint32
 	djtxAssetID ids.ID
 
-	delayCache  *utils.DelayCache
+	delayCache  *caching.DelayCache
 	djtxReader  *djtx.Reader
 	connections *utils.Connections
 }
@@ -60,7 +61,7 @@ func (c *Context) cacheGet(key string) ([]byte, error) {
 	return c.delayCache.Cache.Get(ctxget, key)
 }
 
-func (c *Context) cacheRun(reqTime time.Duration, cacheable utils.Cacheable) (interface{}, error) {
+func (c *Context) cacheRun(reqTime time.Duration, cacheable caching.Cacheable) (interface{}, error) {
 	ctxreq, cancelFnReq := context.WithTimeout(context.Background(), reqTime)
 	defer cancelFnReq()
 
@@ -69,8 +70,8 @@ func (c *Context) cacheRun(reqTime time.Duration, cacheable utils.Cacheable) (in
 
 // WriteCacheable writes to the http response the output of the given Cacheable's
 // function, either from the cache or from a new execution of the function
-func (c *Context) WriteCacheable(w http.ResponseWriter, cacheable utils.Cacheable) {
-	key := utils.CacheKey(c.NetworkID(), cacheable.Key...)
+func (c *Context) WriteCacheable(w http.ResponseWriter, cacheable caching.Cacheable) {
+	key := caching.CacheKey(c.NetworkID(), cacheable.Key...)
 
 	// Get from cache or, if there is a cache miss, from the cacheablefn
 	resp, err := c.cacheGet(key)
@@ -82,14 +83,16 @@ func (c *Context) WriteCacheable(w http.ResponseWriter, cacheable utils.Cacheabl
 		if err == nil {
 			resp, err = json.Marshal(obj)
 			if err == nil {
-				c.delayCache.Worker.TryEnque(&utils.CacheJob{Key: key, Body: &resp, TTL: cacheable.TTL})
+				c.delayCache.Worker.TryEnque(&caching.CacheJob{Key: key, Body: &resp, TTL: cacheable.TTL})
 			}
 		}
 	}
 
 	// Write error or response
 	if err != nil {
-		c.sc.Log.Warn("server error %v", err)
+		c.sc.Log.Warn("server error",
+			zap.Error(err),
+		)
 		c.WriteErr(w, 500, ErrCacheableFnFailed)
 		return
 	}
@@ -104,7 +107,9 @@ func (c *Context) WriteErr(w http.ResponseWriter, code int, err error) {
 	})
 	if err != nil {
 		w.WriteHeader(500)
-		c.sc.Log.Warn("marshal %v", err)
+		c.sc.Log.Warn("marshal error",
+			zap.Error(err),
+		)
 		return
 	}
 
@@ -135,7 +140,7 @@ func (c *Context) cacheKeyForParams(name string, p params.Param) []string {
 	return append([]string{"djtx", name}, p.CacheKey()...)
 }
 
-func newContextSetter(sc *servicesctrl.Control, networkID uint32, connections *utils.Connections, delayCache *utils.DelayCache) func(*Context, web.ResponseWriter, *web.Request, web.NextMiddlewareFunc) {
+func newContextSetter(sc *servicesctrl.Control, networkID uint32, connections *utils.Connections, delayCache *caching.DelayCache) func(*Context, web.ResponseWriter, *web.Request, web.NextMiddlewareFunc) {
 	return func(c *Context, w web.ResponseWriter, r *web.Request, next web.NextMiddlewareFunc) {
 		c.sc = sc
 		c.connections = connections

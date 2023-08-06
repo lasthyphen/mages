@@ -28,8 +28,8 @@ services:
   camino:
     env_file:
       - columbus.env
-    image: "c4tplatform/caminogo:v0.1.0"
-    command: /bin/sh -cx "exec /caminogo/build/caminogo
+    image: "c4tplatform/camino-node:v0.1.0"
+    command: /bin/sh -cx "exec /camino-node/build/camino-node
       --config-file=/opt/config.json
       --network-id=$${NETWORKID}
       "
@@ -37,14 +37,14 @@ services:
       - "9650:9650"
     volumes:
       - /var/lib/magellan/camino:/var/lib/camino
-      - ./../caminogo_config.json:/opt/config.json
-      - ./../caminogo_chain_config:/opt/caminogo
-      - caminogo-ipcs:/tmp
+      - ./../camino-node_config.json:/opt/config.json
+      - ./../camino-node_chain_config:/opt/camino-node
+      - camino-node-ipcs:/tmp
     depends_on:
       - indexer
     restart: always
   indexer: &magellan-app
-    image: "c4tplatform/magellan:v0.0.0"
+    image: "c4tplatform/magellan:v0.1.0"
     command: ["stream", "indexer", "-c", "/opt/config.json"]
     external_links:
       - mysql

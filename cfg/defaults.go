@@ -15,6 +15,7 @@ package cfg
 
 const defaultJSON = `{
   "networkID": 1001,
+  "cacheUpdateInterval": "5",
   "logDirectory": "/tmp/magellan/logs",
   "listenAddr": ":8080",
   "chains": {},

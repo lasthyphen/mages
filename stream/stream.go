@@ -16,8 +16,15 @@ package stream
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/lasthyphen/mages/services"
+)
+
+const (
+	dbReadTimeout  = 10 * time.Second
+	dbWriteTimeout = time.Minute
+	readRPCTimeout = 500 * time.Millisecond
 )
 
 var (

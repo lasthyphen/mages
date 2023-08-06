@@ -16,8 +16,9 @@ package models
 import (
 	"time"
 
-	"github.com/lasthyphen/coreth/core/types"
 	"github.com/lasthyphen/dijetsnodego/ids"
+	"github.com/lasthyphen/dijetsnodego/utils/math"
+	"github.com/lasthyphen/mages/modelsc"
 )
 
 type ListMetadata struct {
@@ -60,7 +61,7 @@ type CTransactionData struct {
 	R *string `json:"r,omitempty"`
 	S *string `json:"s,omitempty"`
 
-	Receipt *types.Receipt `json:"receipt"`
+	Receipt *modelsc.ExtendedReceipt `json:"receipt"`
 }
 
 type CBlockHeaderBase struct {
@@ -94,15 +95,13 @@ type CTransactionDataBase struct {
 	From      string `json:"from"`
 	To        string `json:"to,omitempty"`
 
-	CreatedAt string `json:"timestamp"`
-	Status    string `json:"status"`
-	GasUsed   string `json:"gasUsed"`
+	CreatedAt         string `json:"timestamp"`
+	Status            string `json:"status"`
+	GasUsed           string `json:"gasUsed"`
+	EffectiveGasPrice string `json:"effectiveGasPrice"`
 }
 
 type CBlockList struct {
-	BlockCount       uint64 `json:"blockCount"`
-	TransactionCount uint64 `json:"transactionCount"`
-
 	Blocks       []*CBlockHeaderBase     `json:"blocks"`
 	Transactions []*CTransactionDataBase `json:"transactions"`
 }
@@ -126,6 +125,11 @@ type AssetList struct {
 type AddressList struct {
 	ListMetadata
 	Addresses []*AddressInfo `json:"addresses"`
+}
+
+type CResult struct {
+	Number uint64 `json:"number"`
+	Hash   string `json:"hash"`
 }
 
 // SearchResults represents a set of items returned for a search query.
@@ -170,9 +174,10 @@ type TxfeeAggregatesHistogram struct {
 }
 
 type TxfeeAggregates struct {
-	// Idx is used internally when creating a histogram of Aggregates.
+	AggregateMerge
+	// IntervalID is used internally when creating a histogram of Aggregates.
 	// It is exported only so it can be written to by dbr.
-	Idx int `json:"-"`
+	IntervalID int `json:"-"`
 
 	// StartTime is the calculated start time rounded to the nearest
 	// TransactionRoundDuration.
@@ -182,8 +187,10 @@ type TxfeeAggregates struct {
 	// TransactionRoundDuration.
 	EndTime time.Time `json:"endTime"`
 
-	Txfee TokenAmount `json:"txfee"`
+	Txfee uint64 `json:"txfee"`
 }
+
+type TxfeeAggregatesList []TxfeeAggregates
 
 type AggregatesHistogram struct {
 	Aggregates   Aggregates    `json:"aggregates"`
@@ -200,9 +207,10 @@ type AggregatesHistogram struct {
 }
 
 type Aggregates struct {
-	// Idx is used internally when creating a histogram of Aggregates.
+	AggregateMerge
+	// IntervalID is used internally when creating a histogram of Aggregates.
 	// It is exported only so it can be written to by dbr.
-	Idx int `json:"-"`
+	IntervalID int `json:"-"`
 
 	// StartTime is the calculated start time rounded to the nearest
 	// TransactionRoundDuration.
@@ -219,6 +227,12 @@ type Aggregates struct {
 	AssetCount        uint64      `json:"assetCount"`
 }
 
+type AggregatesList []Aggregates
+
+type BlockValue struct {
+	Block uint64 `json:"block"`
+}
+
 type AddressChains struct {
 	AddressChains map[string][]StringID `json:"addressChains"`
 }
@@ -226,4 +240,74 @@ type AddressChains struct {
 type AssetAggregate struct {
 	Asset     ids.ID               `json:"asset"`
 	Aggregate *AggregatesHistogram `json:"aggregate"`
+}
+
+/*******************  Merging  ***********************/
+
+type AggregateMerge interface {
+	ID() int
+	Merge(AggregateMerge)
+}
+
+type AggregateMergeList []AggregateMerge
+
+func (a *Aggregates) ID() int { return a.IntervalID }
+
+func (a *Aggregates) Merge(b AggregateMerge) {
+	src := b.(*Aggregates)
+	a.AddressCount += src.AddressCount
+	a.AssetCount = math.Max64(a.AssetCount, src.AssetCount)
+	a.OutputCount += src.OutputCount
+	a.TransactionCount += src.TransactionCount
+	a.TransactionVolume += src.TransactionVolume
+}
+
+func (al AggregatesList) MergeList() *AggregateMergeList {
+	result := make(AggregateMergeList, len(al))
+	for i := range al {
+		result[i] = &al[i]
+	}
+	return &result
+}
+
+func (a *TxfeeAggregates) ID() int { return a.IntervalID }
+
+func (a *TxfeeAggregates) Merge(b AggregateMerge) {
+	src := b.(*TxfeeAggregates)
+	a.Txfee += src.Txfee
+}
+
+func (al TxfeeAggregatesList) MergeList() *AggregateMergeList {
+	result := make(AggregateMergeList, len(al))
+	for i := range al {
+		result[i] = &al[i]
+	}
+	return &result
+}
+
+// Merges two TxfeeAggregateList, both have to be sorted by Idx
+func MergeAggregates(dst, src *AggregateMergeList) {
+	if len(*src) == 0 {
+		return
+	}
+
+	merged := []AggregateMerge{}
+	srcID := 0
+	for _, dstI := range *dst {
+		// Insert smallerLists from src
+		for srcID < len(*src) && (*src)[srcID].ID() < dstI.ID() {
+			merged = append(merged, (*src)[srcID])
+			srcID++
+		}
+		// Insert dst elem
+		merged = append(merged, dstI)
+		// cummulate values if it's the same id
+		if srcID < len(*src) && (*src)[srcID].ID() == dstI.ID() {
+			merged[len(merged)-1].Merge((*src)[srcID])
+			srcID++
+		}
+	}
+	merged = append(merged, (*src)[srcID:]...)
+
+	*dst = merged
 }

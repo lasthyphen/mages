@@ -20,10 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lasthyphen/dijetsnodego/vms/avm/fxs"
+	"github.com/lasthyphen/dijetsnodego/vms/avm/txs"
+
 	"github.com/lasthyphen/dijetsnodego/ids"
 	"github.com/lasthyphen/dijetsnodego/utils/crypto"
 	"github.com/lasthyphen/dijetsnodego/utils/logging"
-	"github.com/lasthyphen/dijetsnodego/vms/avm"
 	caminoGoDjtx "github.com/lasthyphen/dijetsnodego/vms/components/djtx"
 	"github.com/lasthyphen/dijetsnodego/vms/secp256k1fx"
 	"github.com/lasthyphen/mages/cfg"
@@ -36,21 +38,24 @@ import (
 	"github.com/lasthyphen/mages/utils"
 )
 
-var (
-	testXChainID = ids.ID([32]byte{7, 193, 50, 215, 59, 55, 159, 112, 106, 206, 236, 110, 229, 14, 139, 125, 14, 101, 138, 65, 208, 44, 163, 38, 115, 182, 177, 179, 244, 34, 195, 120})
-)
+var testXChainID = ids.ID([32]byte{7, 193, 50, 215, 59, 55, 159, 112, 106, 206, 236, 110, 229, 14, 139, 125, 14, 101, 138, 65, 208, 44, 163, 38, 115, 182, 177, 179, 244, 34, 195, 120})
 
 func TestIndexBootstrap(t *testing.T) {
 	conns, writer, reader, closeFn := newTestIndex(t, testXChainID)
 	defer closeFn()
 
 	persist := db.NewPersist()
+	ctx := context.Background()
+	session, _ := conns.DB().NewSession("avm_test_tx", cfg.RequestTimeout)
+
+	_, _ = session.DeleteFrom("avm_transactions").ExecContext(ctx)
+
 	err := writer.Bootstrap(newTestContext(), conns, persist)
 	if err != nil {
 		t.Fatal("Failed to bootstrap index:", err.Error())
 	}
 
-	txList, err := reader.ListTransactions(context.Background(), &params.ListTransactionsParams{
+	txList, err := reader.ListTransactions(ctx, &params.ListTransactionsParams{
 		ChainIDs: []string{testXChainID.String()},
 	}, ids.Empty)
 	if err != nil {
@@ -72,17 +77,14 @@ func TestIndexBootstrap(t *testing.T) {
 		t.Fatal("Transaction fee is not 0")
 	}
 
-	// inject a txfee for testing
-	session, _ := conns.DB().NewSession("avm_test_tx", cfg.RequestTimeout)
-
 	transaction := &db.Transactions{
 		ID: string(txList.Transactions[0].ID),
 	}
-	transaction, _ = persist.QueryTransactionsAtomic(context.Background(), session, transaction)
+	transaction, _ = persist.QueryTransactions(ctx, session, transaction)
 	transaction.Txfee = 101
-	_ = persist.InsertTransactionsAtomic(context.Background(), session, transaction, true)
+	_ = persist.InsertTransactions(ctx, session, transaction, true)
 
-	txList, _ = reader.ListTransactions(context.Background(), &params.ListTransactionsParams{
+	txList, _ = reader.ListTransactions(ctx, &params.ListTransactionsParams{
 		ChainIDs: []string{string(txList.Transactions[0].ChainID)},
 	}, ids.Empty)
 
@@ -100,9 +102,9 @@ func TestIndexBootstrap(t *testing.T) {
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	_ = persist.InsertAddressChain(context.Background(), sess, addressChain, false)
+	_ = persist.InsertAddressChain(ctx, sess, addressChain, false)
 
-	addressChains, err := reader.AddressChains(context.Background(), &params.AddressChainsParams{
+	addressChains, err := reader.AddressChains(ctx, &params.AddressChainsParams{
 		Addresses: []ids.ShortID{addr},
 	})
 	if err != nil {
@@ -117,7 +119,7 @@ func TestIndexBootstrap(t *testing.T) {
 	}
 
 	// invoke the address and asset logic to test the db.
-	txList, err = reader.ListTransactions(context.Background(), &params.ListTransactionsParams{
+	txList, err = reader.ListTransactions(ctx, &params.ListTransactionsParams{
 		ChainIDs:  []string{testXChainID.String()},
 		Addresses: []ids.ShortID{ids.ShortEmpty},
 	}, ids.Empty)
@@ -138,7 +140,11 @@ func TestIndexBootstrap(t *testing.T) {
 func newTestIndex(t *testing.T, chainID ids.ID) (*utils.Connections, *Writer, *djtx.Reader, func()) {
 	networkID := uint32(5)
 
-	logConf := logging.DefaultConfig
+	logConf := logging.Config{
+		DisplayLevel: logging.Info,
+		LogLevel:     logging.Debug,
+	}
+
 	conf := cfg.Services{
 		Logging: logConf,
 		DB: &cfg.DB{
@@ -160,7 +166,7 @@ func newTestIndex(t *testing.T, chainID ids.ID) (*utils.Connections, *Writer, *d
 	}
 
 	cmap := make(map[string]services.Consumer)
-	reader, _ := djtx.NewReader(networkID, conns, cmap, nil, sc)
+	reader, _ := djtx.NewReader(networkID, conns, cmap, sc)
 	return conns, writer, reader, func() {
 		_ = conns.Close()
 	}
@@ -177,8 +183,8 @@ func TestInsertTxInternal(t *testing.T) {
 	defer closeFn()
 	ctx := context.Background()
 
-	tx := &avm.Tx{}
-	baseTx := &avm.BaseTx{}
+	tx := &txs.Tx{}
+	baseTx := &txs.BaseTx{}
 
 	transferableOut := &caminoGoDjtx.TransferableOutput{}
 	transferableOut.Out = &secp256k1fx.TransferOutput{
@@ -192,17 +198,17 @@ func TestInsertTxInternal(t *testing.T) {
 
 	f := crypto.FactorySECP256K1R{}
 	pk, _ := f.NewPrivateKey()
-	sb, _ := pk.Sign(baseTx.UnsignedBytes())
+	sb, _ := pk.Sign(baseTx.Bytes())
 	cred := &secp256k1fx.Credential{}
 	cred.Sigs = make([][crypto.SECP256K1RSigLen]byte, 0, 1)
 	sig := [crypto.SECP256K1RSigLen]byte{}
 	copy(sig[:], sb)
 	cred.Sigs = append(cred.Sigs, sig)
-	tx.Creds = []*avm.FxCredential{
+	tx.Creds = []*fxs.FxCredential{
 		{Verifiable: cred},
 	}
 
-	tx.UnsignedTx = baseTx
+	tx.Unsigned = baseTx
 
 	persist := db.NewPersistMock()
 	session, _ := conns.DB().NewSession("avm_test_tx", cfg.RequestTimeout)
@@ -245,8 +251,8 @@ func TestInsertTxInternalCreateAsset(t *testing.T) {
 	defer closeFn()
 	ctx := context.Background()
 
-	tx := &avm.Tx{}
-	baseTx := &avm.CreateAssetTx{}
+	tx := &txs.Tx{}
+	baseTx := &txs.CreateAssetTx{}
 
 	transferableOut := &caminoGoDjtx.TransferableOutput{}
 	transferableOut.Out = &secp256k1fx.TransferOutput{}
@@ -256,7 +262,7 @@ func TestInsertTxInternalCreateAsset(t *testing.T) {
 	transferableIn.In = &secp256k1fx.TransferInput{}
 	baseTx.Ins = []*caminoGoDjtx.TransferableInput{transferableIn}
 
-	tx.UnsignedTx = baseTx
+	tx.Unsigned = baseTx
 
 	persist := db.NewPersistMock()
 	session, _ := conns.DB().NewSession("avm_test_tx", cfg.RequestTimeout)
@@ -307,7 +313,7 @@ func TestTransactionNext(t *testing.T) {
 		ChainID:   "1",
 		CreatedAt: tnow1,
 	}
-	_ = persist.InsertTransactionsAtomic(ctx, session, tx1, false)
+	_ = persist.InsertTransactions(ctx, session, tx1, false)
 
 	tnow2 := tnow1.Add(time.Second)
 	tx2 := &db.Transactions{
@@ -315,7 +321,7 @@ func TestTransactionNext(t *testing.T) {
 		ChainID:   "1",
 		CreatedAt: tnow2,
 	}
-	_ = persist.InsertTransactionsAtomic(ctx, session, tx2, false)
+	_ = persist.InsertTransactions(ctx, session, tx2, false)
 
 	tnow3 := tnow2.Add(time.Second)
 	tx3 := &db.Transactions{
@@ -323,7 +329,7 @@ func TestTransactionNext(t *testing.T) {
 		ChainID:   "1",
 		CreatedAt: tnow3,
 	}
-	_ = persist.InsertTransactionsAtomic(ctx, session, tx3, false)
+	_ = persist.InsertTransactions(ctx, session, tx3, false)
 
 	tnow4 := tnow3.Add(time.Second)
 	tx4 := &db.Transactions{
@@ -331,7 +337,7 @@ func TestTransactionNext(t *testing.T) {
 		ChainID:   "1",
 		CreatedAt: tnow4,
 	}
-	_ = persist.InsertTransactionsAtomic(ctx, session, tx4, false)
+	_ = persist.InsertTransactions(ctx, session, tx4, false)
 
 	tp := params.ListTransactionsParams{}
 	_ = tp.ForValues(0, url.Values{})

@@ -7,14 +7,6 @@ import (
 	"time"
 )
 
-type PvmProposerModel struct {
-	ID           StringID  `json:"id"`
-	ParentID     StringID  `json:"parentID"`
-	PChainHeight uint64    `json:"pchainHeight"`
-	Proposer     StringID  `json:"proposer"`
-	TimeStamp    time.Time `json:"timestamp"`
-}
-
 type Transaction struct {
 	ID      StringID `json:"id"`
 	ChainID StringID `json:"chainID"`
@@ -49,7 +41,7 @@ type Transaction struct {
 
 	TxBlockID StringID `json:"txBlockId"`
 
-	Proposer *PvmProposerModel `json:"proposer,omitempty"`
+	Proposer *BlockProposal `json:"proposer,omitempty"`
 
 	Score uint64 `json:"-"`
 }
@@ -162,10 +154,6 @@ type CvmOutput struct {
 	CreatedAt       time.Time   `json:"timestamp"`
 	ChainID         StringID    `json:"chainID"`
 	Block           string      `json:"block"`
-}
-
-type RawTx struct {
-	Tx string `json:"tx"`
 }
 
 type ChainCounts struct {

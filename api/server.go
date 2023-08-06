@@ -18,13 +18,16 @@ import (
 	"net/http"
 	"time"
 
+	"go.uber.org/zap"
+
+	"github.com/lasthyphen/dijetsnodego/ids"
+	"github.com/lasthyphen/mages/caching"
 	"github.com/lasthyphen/mages/cfg"
 	"github.com/lasthyphen/mages/models"
 	"github.com/lasthyphen/mages/services"
 	"github.com/lasthyphen/mages/services/indexes/djtx"
 	"github.com/lasthyphen/mages/servicesctrl"
 	"github.com/lasthyphen/mages/stream/consumers"
-	"github.com/lasthyphen/mages/utils"
 	"github.com/gocraft/web"
 )
 
@@ -47,18 +50,21 @@ func NewServer(sc *servicesctrl.Control, conf cfg.Config) (*Server, error) {
 	return &Server{
 		sc: sc,
 		server: &http.Server{
-			Addr:         conf.ListenAddr,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: cfg.HTTPWriteTimeout,
-			IdleTimeout:  15 * time.Second,
-			Handler:      router,
+			Addr:              conf.ListenAddr,
+			ReadTimeout:       5 * time.Second,
+			WriteTimeout:      cfg.HTTPWriteTimeout,
+			IdleTimeout:       15 * time.Second,
+			Handler:           router,
+			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}, err
 }
 
 // Listen begins listening for new socket connections and blocks until closed
 func (s *Server) Listen() error {
-	s.sc.Log.Info("Server listening on %s", s.server.Addr)
+	s.sc.Log.Info("server listening",
+		zap.String("addr", s.server.Addr),
+	)
 	return s.server.ListenAndServe()
 }
 
@@ -71,14 +77,34 @@ func (s *Server) Close() error {
 }
 
 func newRouter(sc *servicesctrl.Control, conf cfg.Config) (*web.Router, error) {
-	sc.Log.Info("Router chainID %s", sc.GenesisContainer.XChainID.String())
+	sc.Log.Info("creating new router",
+		zap.Stringer("chainID", sc.GenesisContainer.XChainID),
+	)
+	var xChainID, cChainID ids.ID
+	for key, chain := range conf.Chains {
+		switch chain.VMType {
+		case models.CVMName:
+			cChainID, _ = ids.FromString(key)
+		case models.AVMName:
+			xChainID, _ = ids.FromString(key)
+		}
+	}
 
-	indexBytes, err := newIndexResponse(conf.NetworkID, sc.GenesisContainer.XChainID, sc.GenesisContainer.DjtxAssetID)
+	indexBytes, err := newIndexResponse(
+		conf.NetworkID,
+		xChainID,
+		cChainID,
+		sc.GenesisContainer.DjtxAssetID,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	legacyIndexResponse, err := newLegacyIndexResponse(conf.NetworkID, sc.GenesisContainer.XChainID, sc.GenesisContainer.DjtxAssetID)
+	legacyIndexResponse, err := newLegacyIndexResponse(
+		conf.NetworkID,
+		sc.GenesisContainer.XChainID,
+		sc.GenesisContainer.DjtxAssetID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -89,22 +115,18 @@ func newRouter(sc *servicesctrl.Control, conf cfg.Config) (*web.Router, error) {
 		return nil, err
 	}
 
-	cache := utils.NewCache()
-	delayCache := utils.NewDelayCache(cache)
+	cache := caching.NewCache()
+	delayCache := caching.NewDelayCache(cache)
 
 	consumersmap := make(map[string]services.Consumer)
 	for chid, chain := range conf.Chains {
-		consumer, err := consumers.IndexerConsumer(conf.NetworkID, chain.VMType, chid)
+		consumer, err := consumers.IndexerConsumer(conf.NetworkID, chain.VMType, chid, &conf)
 		if err != nil {
 			return nil, err
 		}
 		consumersmap[chid] = consumer
 	}
-	consumercchain, err := consumers.IndexerConsumerCChain(conf.NetworkID, conf.CchainID)
-	if err != nil {
-		return nil, err
-	}
-	djtxReader, err := djtx.NewReader(conf.NetworkID, connections, consumersmap, consumercchain, sc)
+	djtxReader, err := djtx.NewReader(conf.NetworkID, connections, consumersmap, sc)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +139,9 @@ func newRouter(sc *servicesctrl.Control, conf cfg.Config) (*web.Router, error) {
 		Middleware((*Context).setHeaders).
 		Get("/", func(c *Context, resp web.ResponseWriter, _ *web.Request) {
 			if _, err := resp.Write(indexBytes); err != nil {
-				sc.Log.Warn("resp write %v", err)
+				sc.Log.Warn("response write failed",
+					zap.Error(err),
+				)
 			}
 		}).
 		NotFound((*Context).notFoundHandler).

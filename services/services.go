@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/lasthyphen/mages/db"
-	"github.com/lasthyphen/mages/modelsc"
+	"github.com/lasthyphen/mages/models"
 	"github.com/lasthyphen/mages/utils"
 	"github.com/gocraft/dbr/v2"
 )
@@ -34,13 +34,7 @@ type Consumer interface {
 	Bootstrap(context.Context, *utils.Connections, db.Persist) error
 	Consume(context.Context, *utils.Connections, Consumable, db.Persist) error
 	ConsumeConsensus(context.Context, *utils.Connections, Consumable, db.Persist) error
-	ParseJSON([]byte) ([]byte, error)
-}
-
-type ConsumerCChain interface {
-	Name() string
-	Consume(context.Context, *utils.Connections, Consumable, *modelsc.Block, db.Persist) error
-	ParseJSON([]byte) ([]byte, error)
+	ParseJSON([]byte, *models.BlockProposal) ([]byte, error)
 }
 
 type ConsumerCtx struct {

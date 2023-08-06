@@ -5,10 +5,13 @@
   "listenAddr": ":8080",
   "features": [
   ],
-  "caminogo": "http://camino:9650",
+  "camino-node": "http://camino:9650",
   "nodeInstance": "default",
-  "cchainId": "G52TJLLbDSxYXsijNMpKFB6kAyDVRd9DGWVWYBh86Z8sEXm1i",
   "chains": {
+    "G52TJLLbDSxYXsijNMpKFB6kAyDVRd9DGWVWYBh86Z8sEXm1i": {
+      "id": "G52TJLLbDSxYXsijNMpKFB6kAyDVRd9DGWVWYBh86Z8sEXm1i",
+      "vmType": "cvm"
+    },
     "11111111111111111111111111111111LpoYY": {
       "id": "11111111111111111111111111111111LpoYY",
       "vmType": "pvm"

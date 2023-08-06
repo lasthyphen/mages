@@ -113,12 +113,12 @@ As items are consumed into the indexer the count of processed = 0 transactions d
 # Docker containers
 
 There are 2 magellan services: api and indexer.
-There will be a caminogo, and mysql container.
+There will be a camino-node, and mysql container.
 
 ```
 # docker ps -a
 CONTAINER ID   IMAGE                             COMMAND                  CREATED          STATUS                      PORTS                                              NAMES
-f9bd3c9d6f74   c4tplatform/caminogo:v0.1.0    "/bin/sh -cx 'exec .…"   19 minutes ago   Up 19 minutes               0.0.0.0:9650->9650/tcp                             production_caminogo_1
+f9bd3c9d6f74   c4tplatform/camino-node:v0.2.0    "/bin/sh -cx 'exec .…"   19 minutes ago   Up 19 minutes               0.0.0.0:9650->9650/tcp                             production_camino-node_1
 70c5b875c07d   c4tplatform/magellan:v0.0.0      "/opt/magelland api …"   19 minutes ago   Up 19 minutes               0.0.0.0:8080->8080/tcp                             production_api_1
 ee28fdea61c2   c4tplatform/magellan:v0.0.0      "/opt/magelland stre…"   19 minutes ago   Up 19 minutes                                                                  production_indexer_1
 ae923d0489f0   mysql:8.0.26                      "docker-entrypoint.s…"   19 minutes ago   Up 19 minutes               0.0.0.0:3306->3306/tcp, 33060/tcp                  production_mysql_1
@@ -164,19 +164,19 @@ Update [config](https://github.com/lasthyphen/mages/blob/master/docker/config.js
 
 The full Magellan pipeline requires the following services. This guide will not cover their installation but will discuss key configuration settings.
 
-- **[CaminoGo](https://github.com/lasthyphen/dijetsnodego)** is the gateway to the Camino network
+- **[Camino Node](https://github.com/chain4travel/camino-node)** is the gateway to the Camino network
 - **[MySQL](https://www.mysql.com/)** powers the index
 
 ## Configuring services
 
 ### CaminoGo
 
-The IPCs for the chains you want to consume must be available. This can be done by starting the caminogo process with the `--index-enabled` flag.
+The IPCs for the chains you want to consume must be available. This can be done by starting the camino-node process with the `--index-enabled` flag.
 
 see:
-[caminogo configs](https://docs.camino.foundation/build/references/command-line-interface)
+[camino-node configs](https://docs.camino.foundation/build/references/command-line-interface)
 
-[caminogo chain configs](https://docs.camino.foundation/build/references/command-line-interface#chain-configs)
+[camino-node chain configs](https://docs.camino.foundation/build/references/command-line-interface#chain-configs)
 
 ### MySQL
 

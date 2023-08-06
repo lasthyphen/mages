@@ -11,13 +11,14 @@
 // (c) 2021, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package utils
+package caching
 
 import (
 	"context"
 	"time"
 
 	"github.com/lasthyphen/mages/cfg"
+	"github.com/lasthyphen/mages/utils"
 )
 
 const (
@@ -33,12 +34,12 @@ type CacheJob struct {
 
 type DelayCache struct {
 	Cache  Cacher
-	Worker Worker
+	Worker utils.Worker
 }
 
 func NewDelayCache(cache Cacher) *DelayCache {
 	c := &DelayCache{Cache: cache}
-	c.Worker = NewWorker(WorkerQueueSize, WorkerThreadCount, c.Processor)
+	c.Worker = utils.NewWorker(WorkerQueueSize, WorkerThreadCount, c.Processor)
 	return c
 }
 

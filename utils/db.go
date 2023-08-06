@@ -25,8 +25,9 @@ import (
 )
 
 const (
-	DriverMysql = "mysql"
-	DriverNone  = ""
+	DriverMysql     = "mysql"
+	DriverNone      = ""
+	RequiredVersion = 47
 )
 
 // Conn is a wrapper around a dbr connection and a health stream
@@ -41,10 +42,21 @@ func New(eventer *EventRcvr, conf cfg.DB, ro bool) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Conn{
+
+	result := &Conn{
 		conn:    conn,
 		eventer: eventer,
-	}, nil
+	}
+	session, err := result.NewSession("startup", time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	var version int64
+	if err := session.QueryRow("SELECT version FROM schema_migrations").Scan(&version); err == nil && version < RequiredVersion {
+		return nil, fmt.Errorf("migration required")
+	}
+	return result, nil
 }
 
 func (c *Conn) Close(context.Context) error {

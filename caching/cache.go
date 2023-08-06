@@ -1,7 +1,7 @@
 // (c) 2021, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package utils
+package caching
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lasthyphen/mages/utils"
 )
 
 const (
@@ -48,11 +50,11 @@ type Cache interface {
 }
 
 type cacheContainer struct {
-	cache *LCache
+	cache *utils.LCache
 }
 
 func NewCache() Cache {
-	return &cacheContainer{cache: NewTTLMap()}
+	return &cacheContainer{cache: utils.NewTTLMap()}
 }
 
 func (c *cacheContainer) Get(_ context.Context, key string) ([]byte, error) {

@@ -260,7 +260,12 @@ type ListCTransactionsParams struct {
 }
 
 func (p *ListCTransactionsParams) ForValues(v uint8, q url.Values) error {
-	err := p.ListParams.ForValues(v, q)
+	err := p.ListParams.ForValuesAllowOffset(v, q)
+	if err != nil {
+		return err
+	}
+
+	err = p.ListParams.ForValues(v, q)
 	if err != nil {
 		return err
 	}
@@ -340,7 +345,10 @@ func (p *ListCTransactionsParams) Apply(b *dbr.SelectBuilder) *dbr.SelectBuilder
 type ListCBlocksParams struct {
 	ListParams ListParams
 	TxLimit    int
-	TxOffset   int
+	CAddresses []string
+	BlockStart *big.Int
+	BlockEnd   *big.Int
+	TxID       uint
 }
 
 func (p *ListCBlocksParams) ForValues(version uint8, q url.Values) (err error) {
@@ -357,23 +365,47 @@ func (p *ListCBlocksParams) ForValues(version uint8, q url.Values) (err error) {
 		}
 	}
 
-	p.TxOffset = 0
-	offsets, ok := q[KeyOffset]
-	if ok && len(offsets) > 1 {
-		if p.TxOffset, err = strconv.Atoi(offsets[1]); err != nil {
-			return err
+	addressStrs := q[KeyAddress]
+	for _, addressStr := range addressStrs {
+		if !strings.HasPrefix(addressStr, "0x") {
+			addressStr = "0x" + addressStr
+		}
+		p.CAddresses = append(p.CAddresses, strings.ToLower(addressStr))
+	}
+
+	blockStartStr := q[KeyBlockStart]
+	if len(blockStartStr) == 1 {
+		bint := big.NewInt(0)
+		if _, ok := bint.SetString(blockStartStr[0], 10); ok {
+			p.BlockStart = bint
+		}
+	}
+	blockEndStr := q[KeyBlockEnd]
+	if len(blockEndStr) == 1 {
+		bint := big.NewInt(0)
+		if _, ok := bint.SetString(blockEndStr[0], 10); ok {
+			p.BlockEnd = bint
 		}
 	}
 
+	txIDs := q[KeyTransactionID]
+	if len(txIDs) == 1 {
+		txID, err := strconv.ParseInt(txIDs[0], 10, 32)
+		if err != nil {
+			return err
+		}
+		p.TxID = uint(txID)
+	}
 	return nil
 }
 
 func (p *ListCBlocksParams) CacheKey() []string {
-	k := make([]string, 0, 2)
+	k := make([]string, 0, 3)
 
 	k = append(k,
 		CacheKey(KeyLimit, p.TxLimit),
-		CacheKey(KeyOffset, p.TxOffset),
+		CacheKey(KeyBlockStart, p.BlockStart),
+		CacheKey(KeyBlockEnd, p.BlockEnd),
 	)
 
 	return append(p.ListParams.CacheKey(), k...)
@@ -666,9 +698,7 @@ func ForValueChainID(chainID *ids.ID, chainIDs []string) []string {
 	return chainIDs
 }
 
-//
 // Sorting
-//
 type TransactionSort uint8
 
 func toTransactionSort(s string) TransactionSort {

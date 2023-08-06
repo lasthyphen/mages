@@ -15,9 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lasthyphen/dijetsnodego/vms/platformvm/blocks"
+
+	"github.com/lasthyphen/dijetsnodego/vms/platformvm/txs"
+
 	"github.com/lasthyphen/dijetsnodego/ids"
 	"github.com/lasthyphen/dijetsnodego/utils/logging"
-	"github.com/lasthyphen/dijetsnodego/vms/platformvm"
 	"github.com/lasthyphen/mages/cfg"
 	"github.com/lasthyphen/mages/db"
 	"github.com/lasthyphen/mages/models"
@@ -28,9 +31,7 @@ import (
 	"github.com/lasthyphen/mages/utils"
 )
 
-var (
-	testXChainID = ids.ID([32]byte{7, 193, 50, 215, 59, 55, 159, 112, 106, 206, 236, 110, 229, 14, 139, 125, 14, 101, 138, 65, 208, 44, 163, 38, 115, 182, 177, 179, 244, 34, 195, 120})
-)
+var testXChainID = ids.ID([32]byte{7, 193, 50, 215, 59, 55, 159, 112, 106, 206, 236, 110, 229, 14, 139, 125, 14, 101, 138, 65, 208, 44, 163, 38, 115, 182, 177, 179, 244, 34, 195, 120})
 
 func TestBootstrap(t *testing.T) {
 	conns, w, r, closeFn := newTestIndex(t, 12345, ChainID)
@@ -58,8 +59,10 @@ func TestBootstrap(t *testing.T) {
 }
 
 func newTestIndex(t *testing.T, networkID uint32, chainID ids.ID) (*utils.Connections, *Writer, *djtx.Reader, func()) {
-	logConf := logging.DefaultConfig
-
+	logConf := logging.Config{
+		DisplayLevel: logging.Info,
+		LogLevel:     logging.Debug,
+	}
 	conf := cfg.Services{
 		Logging: logConf,
 		DB: &cfg.DB{
@@ -81,7 +84,7 @@ func newTestIndex(t *testing.T, networkID uint32, chainID ids.ID) (*utils.Connec
 	}
 
 	cmap := make(map[string]services.Consumer)
-	reader, _ := djtx.NewReader(networkID, conns, cmap, nil, sc)
+	reader, _ := djtx.NewReader(networkID, conns, cmap, sc)
 	return conns, writer, reader, func() {
 		_ = conns.Close()
 	}
@@ -92,9 +95,9 @@ func TestInsertTxInternal(t *testing.T) {
 	defer closeFn()
 	ctx := context.Background()
 
-	tx := platformvm.Tx{}
-	validatorTx := &platformvm.UnsignedAddValidatorTx{}
-	tx.UnsignedTx = validatorTx
+	tx := txs.Tx{}
+	validatorTx := &txs.AddValidatorTx{}
+	tx.Unsigned = validatorTx
 
 	persist := db.NewPersistMock()
 	session, _ := conns.DB().NewSession("pvm_test_tx", cfg.RequestTimeout)
@@ -119,9 +122,9 @@ func TestInsertTxInternalRewards(t *testing.T) {
 	defer closeFn()
 	ctx := context.Background()
 
-	tx := platformvm.Tx{}
-	validatorTx := &platformvm.UnsignedRewardValidatorTx{}
-	tx.UnsignedTx = validatorTx
+	tx := txs.Tx{}
+	validatorTx := &txs.RewardValidatorTx{}
+	tx.Unsigned = validatorTx
 
 	persist := db.NewPersistMock()
 	session, _ := conns.DB().NewSession("pvm_test_tx", cfg.RequestTimeout)
@@ -149,13 +152,13 @@ func TestCommonBlock(t *testing.T) {
 	defer closeFn()
 	ctx := context.Background()
 
-	tx := platformvm.CommonBlock{}
+	tx := blocks.CommonBlock{}
 	blkid := ids.ID{}
 
 	persist := db.NewPersistMock()
 	session, _ := conns.DB().NewSession("pvm_test_tx", cfg.RequestTimeout)
 	cCtx := services.NewConsumerContext(ctx, session, time.Now().Unix(), 0, persist, testXChainID.String())
-	err := writer.indexCommonBlock(cCtx, blkid, models.BlockTypeCommit, tx, []byte(""))
+	err := writer.indexCommonBlock(cCtx, blkid, models.BlockTypeCommit, tx, &models.BlockProposal{}, []byte(""))
 	if err != nil {
 		t.Fatal("insert failed", err)
 	}

@@ -11,7 +11,7 @@ fi
 
 TARGET="./..."
 
-go install -v github.com/golangci/golangci-lint/cmd/golangci-lint@v1.45.2
+go install -v github.com/golangci/golangci-lint/cmd/golangci-lint@v1.46.2
 golangci-lint run --config .golangci.yml
 
 echo "ALL SUCCESS!"

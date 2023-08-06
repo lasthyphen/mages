@@ -23,8 +23,10 @@ import (
 	"github.com/gocraft/dbr/v2"
 )
 
-const TestDB = "mysql"
-const TestDSN = "root:password@tcp(127.0.0.1:3306)/magellan_test?parseTime=true"
+const (
+	TestDB  = "mysql"
+	TestDSN = "root:password@tcp(127.0.0.1:3306)/magellan_test?parseTime=true"
+)
 
 func TestTransaction(t *testing.T) {
 	p := NewPersist()
@@ -41,6 +43,7 @@ func TestTransaction(t *testing.T) {
 	v.Genesis = true
 	v.CreatedAt = tm
 	v.NetworkID = 1
+	v.Status = 1
 
 	stream := &dbr.NullEventReceiver{}
 
@@ -50,11 +53,11 @@ func TestTransaction(t *testing.T) {
 	}
 	_, _ = rawDBConn.NewSession(stream).DeleteFrom(TableTransactions).Exec()
 
-	err = p.InsertTransactionsAtomic(ctx, rawDBConn.NewSession(stream), v, true)
+	err = p.InsertTransactions(ctx, rawDBConn.NewSession(stream), v, true)
 	if err != nil {
 		t.Fatal("insert fail", err)
 	}
-	fv, err := p.QueryTransactionsAtomic(ctx, rawDBConn.NewSession(stream), v)
+	fv, err := p.QueryTransactions(ctx, rawDBConn.NewSession(stream), v)
 	if err != nil {
 		t.Fatal("query fail", err)
 	}
@@ -70,11 +73,11 @@ func TestTransaction(t *testing.T) {
 	v.Txfee = 2
 	v.Genesis = false
 	v.NetworkID = 2
-	err = p.InsertTransactionsAtomic(ctx, rawDBConn.NewSession(stream), v, true)
+	err = p.InsertTransactions(ctx, rawDBConn.NewSession(stream), v, true)
 	if err != nil {
 		t.Fatal("insert fail", err)
 	}
-	fv, err = p.QueryTransactionsAtomic(ctx, rawDBConn.NewSession(stream), v)
+	fv, err = p.QueryTransactions(ctx, rawDBConn.NewSession(stream), v)
 	if err != nil {
 		t.Fatal("query fail", err)
 	}
@@ -723,6 +726,10 @@ func TestCvmTransactionsTxdata(t *testing.T) {
 	}
 	_, _ = rawDBConn.NewSession(stream).DeleteFrom(TableCvmTransactionsTxdata).Exec()
 
+	err = p.InsertCvmAccount(ctx, rawDBConn.NewSession(stream), &CvmAccount{}, true)
+	if err != nil {
+		t.Fatal("insert fail", err)
+	}
 	err = p.InsertCvmTransactionsTxdata(ctx, rawDBConn.NewSession(stream), v, true)
 	if err != nil {
 		t.Fatal("insert fail", err)
@@ -1031,10 +1038,7 @@ func TestOutputAddressAccumulateOut(t *testing.T) {
 	v.OutputIndex = 1
 	v.CreatedAt = time.Now().UTC().Truncate(1 * time.Second)
 
-	err := v.ComputeID()
-	if err != nil {
-		t.Fatal("db fail", err)
-	}
+	v.ComputeID()
 
 	stream := &dbr.NullEventReceiver{}
 
@@ -1086,10 +1090,7 @@ func TestOutputAddressAccumulateIn(t *testing.T) {
 	v.OutputIndex = 1
 	v.CreatedAt = time.Now().UTC().Truncate(1 * time.Second)
 
-	err := v.ComputeID()
-	if err != nil {
-		t.Fatal("compute id failed", err)
-	}
+	v.ComputeID()
 
 	stream := &dbr.NullEventReceiver{}
 
@@ -1141,10 +1142,7 @@ func TestOutputTxsAccumulate(t *testing.T) {
 	v.TransactionID = "tr1"
 	v.CreatedAt = time.Now().UTC().Truncate(1 * time.Second)
 
-	err := v.ComputeID()
-	if err != nil {
-		t.Fatal("compute id failed", err)
-	}
+	v.ComputeID()
 
 	stream := &dbr.NullEventReceiver{}
 
@@ -1179,10 +1177,7 @@ func TestAccumulateBalancesReceived(t *testing.T) {
 	v.UtxoCount = "0"
 	v.UpdatedAt = time.Now().UTC().Truncate(1 * time.Second)
 
-	err := v.ComputeID()
-	if err != nil {
-		t.Fatal("compute id failed", err)
-	}
+	v.ComputeID()
 
 	stream := &dbr.NullEventReceiver{}
 
@@ -1217,10 +1212,7 @@ func TestAccumulateBalancesSent(t *testing.T) {
 	v.UtxoCount = "0"
 	v.UpdatedAt = time.Now().UTC().Truncate(1 * time.Second)
 
-	err := v.ComputeID()
-	if err != nil {
-		t.Fatal("compute id failed", err)
-	}
+	v.ComputeID()
 
 	stream := &dbr.NullEventReceiver{}
 
@@ -1254,10 +1246,7 @@ func TestAccumulateBalancesTransactions(t *testing.T) {
 	v.TransactionCount = "0"
 	v.UpdatedAt = time.Now().UTC().Truncate(1 * time.Second)
 
-	err := v.ComputeID()
-	if err != nil {
-		t.Fatal("compute id failed", err)
-	}
+	v.ComputeID()
 
 	stream := &dbr.NullEventReceiver{}
 
@@ -1425,10 +1414,7 @@ func TestTxPool(t *testing.T) {
 	v.MsgKey = "key1"
 	v.CreatedAt = time.Now().UTC().Truncate(1 * time.Second)
 
-	err := v.ComputeID()
-	if err != nil {
-		t.Fatal("compute id failed", err)
-	}
+	v.ComputeID()
 
 	stream := &dbr.NullEventReceiver{}
 
@@ -1472,53 +1458,6 @@ func TestKeyValueStore(t *testing.T) {
 		t.Fatal("insert fail", err)
 	}
 	fv, err := p.QueryKeyValueStore(ctx, rawDBConn.NewSession(stream), v)
-	if err != nil {
-		t.Fatal("query fail", err)
-	}
-	if !reflect.DeepEqual(*v, *fv) {
-		t.Fatal("compare fail")
-	}
-}
-
-func TestCvmTransactionsReceipt(t *testing.T) {
-	p := NewPersist()
-	ctx := context.Background()
-	tm := time.Now().UTC().Truncate(1 * time.Second)
-
-	v := &CvmTransactionsReceipt{}
-	v.Hash = "h1"
-	v.Status = 1
-	v.GasUsed = 123
-	v.Serialization = []byte("bits1")
-	v.CreatedAt = tm
-
-	stream := &dbr.NullEventReceiver{}
-
-	rawDBConn, err := dbr.Open(TestDB, TestDSN, stream)
-	if err != nil {
-		t.Fatal("db fail", err)
-	}
-	_, _ = rawDBConn.NewSession(stream).DeleteFrom(TableCvmTransactionsReceipts).Exec()
-
-	err = p.InsertCvmTransactionsReceipt(ctx, rawDBConn.NewSession(stream), v, true)
-	if err != nil {
-		t.Fatal("insert fail", err)
-	}
-	fv, err := p.QueryCvmTransactionsReceipt(ctx, rawDBConn.NewSession(stream), v)
-	if err != nil {
-		t.Fatal("query fail", err)
-	}
-	if !reflect.DeepEqual(*v, *fv) {
-		t.Fatal("compare fail")
-	}
-
-	v.Serialization = []byte("bits2")
-
-	err = p.InsertCvmTransactionsReceipt(ctx, rawDBConn.NewSession(stream), v, true)
-	if err != nil {
-		t.Fatal("insert fail", err)
-	}
-	fv, err = p.QueryCvmTransactionsReceipt(ctx, rawDBConn.NewSession(stream), v)
 	if err != nil {
 		t.Fatal("query fail", err)
 	}
@@ -1583,65 +1522,6 @@ func TestNodeIndex(t *testing.T) {
 		t.Fatal("query fail", err)
 	}
 	if fv.Idx != 3 {
-		t.Fatal("compare fail")
-	}
-	if !reflect.DeepEqual(*v, *fv) {
-		t.Fatal("compare fail")
-	}
-}
-
-func TestPvmProposer(t *testing.T) {
-	p := NewPersist()
-	ctx := context.Background()
-	tm := time.Now().UTC().Truncate(1 * time.Second)
-
-	v := &PvmProposer{}
-	v.ID = "id"
-	v.ParentID = "pid"
-	v.BlkID = "blk"
-	v.ProposerBlkID = "oblk"
-	v.PChainHeight = 1
-	v.Proposer = "proposer"
-	v.TimeStamp = tm
-	v.CreatedAt = tm
-
-	stream := &dbr.NullEventReceiver{}
-
-	rawDBConn, err := dbr.Open(TestDB, TestDSN, stream)
-	if err != nil {
-		t.Fatal("db fail", err)
-	}
-	_, _ = rawDBConn.NewSession(stream).DeleteFrom(TablePvmProposer).Exec()
-
-	err = p.InsertPvmProposer(ctx, rawDBConn.NewSession(stream), v, true)
-	if err != nil {
-		t.Fatal("insert fail", err)
-	}
-	fv, err := p.QueryPvmProposer(ctx, rawDBConn.NewSession(stream), v)
-	if err != nil {
-		t.Fatal("query fail", err)
-	}
-	if !reflect.DeepEqual(*v, *fv) {
-		t.Fatal("compare fail")
-	}
-
-	v.ParentID = "pid2"
-	v.BlkID = "blk2"
-	v.ProposerBlkID = "oblk2"
-	v.PChainHeight = 2
-	v.Proposer = "proposer2"
-	v.TimeStamp = tm
-	v.CreatedAt = tm
-
-	err = p.InsertPvmProposer(ctx, rawDBConn.NewSession(stream), v, true)
-	if err != nil {
-		t.Fatal("insert fail", err)
-	}
-	fv, err = p.QueryPvmProposer(ctx, rawDBConn.NewSession(stream), v)
-	if err != nil {
-		t.Fatal("query fail", err)
-	}
-	if fv.ParentID != "pid2" {
 		t.Fatal("compare fail")
 	}
 	if !reflect.DeepEqual(*v, *fv) {

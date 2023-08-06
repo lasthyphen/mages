@@ -14,12 +14,14 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lasthyphen/mages/cfg"
 	"github.com/lasthyphen/mages/db"
 	"github.com/lasthyphen/mages/models"
 	"github.com/lasthyphen/mages/services/indexes/params"
+	"github.com/gocraft/dbr/v2"
 )
 
 func (r *Reader) ListCBlocks(ctx context.Context, p *params.ListCBlocksParams) (*models.CBlockList, error) {
@@ -31,34 +33,38 @@ func (r *Reader) ListCBlocks(ctx context.Context, p *params.ListCBlocksParams) (
 	}
 
 	result := models.CBlockList{}
-	err = dbRunner.Select("COUNT(block)").
-		From(db.TableCvmBlocks).
-		LoadOneContext(ctx, &result.BlockCount)
-	if err != nil {
-		return nil, err
-	}
 
-	err = dbRunner.Select("COUNT(hash)").
-		From(db.TableCvmTransactionsTxdata).
-		LoadOneContext(ctx, &result.TransactionCount)
-	if err != nil {
-		return nil, err
-	}
-
-	// Setp 1 get Block headers
+	// Step 1 get Block headers
 	if p.ListParams.Limit > 0 {
 		var blockList []*db.CvmBlocks
 
-		_, err = dbRunner.Select(
+		sq := dbRunner.Select(
 			"evm_tx",
 			"atomic_tx",
 			"serialization",
 		).
-			From(db.TableCvmBlocks).
-			OrderDesc("block").
-			Limit(uint64(p.ListParams.Limit)).
-			Offset(uint64(p.ListParams.Offset)).
-			LoadContext(ctx, &blockList)
+			From(db.TableCvmBlocks)
+
+		if p.ListParams.StartTimeProvided {
+			sq = sq.Where("created_at >= ?", p.ListParams.StartTime)
+		}
+		if p.ListParams.EndTimeProvided {
+			sq = sq.Where("created_at < ?", p.ListParams.EndTime)
+		}
+
+		switch {
+		case p.BlockStart != nil:
+			sq = sq.OrderDesc("block").
+				Where("block <= ?", p.BlockStart.Uint64())
+		case p.BlockEnd != nil:
+			sq = sq.OrderAsc("block").
+				Where("block >= ?", p.BlockEnd.Uint64())
+		default:
+			sq = sq.OrderDesc("block")
+		}
+
+		sq = sq.Limit(uint64(p.ListParams.Limit))
+		_, err = sq.LoadContext(ctx, &blockList)
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +80,7 @@ func (r *Reader) ListCBlocks(ctx context.Context, p *params.ListCBlocksParams) (
 		}
 	}
 
-	// Setp 2 get Transactions
+	// Step 2 get Transactions
 	if p.TxLimit > 0 {
 		var txList []*struct {
 			Serialization []byte
@@ -84,24 +90,52 @@ func (r *Reader) ListCBlocks(ctx context.Context, p *params.ListCBlocksParams) (
 			Idx           uint64
 			Status        uint16
 			GasUsed       uint64
+			GasPrice      uint64
 		}
 
-		_, err = dbRunner.Select(
-			db.TableCvmTransactionsTxdata+".serialization",
-			db.TableCvmTransactionsTxdata+".created_at",
-			"from_addr",
+		sq := dbRunner.Select(
+			"serialization",
+			"created_at",
+			"F.address AS from_addr",
 			"block",
 			"idx",
 			"status",
 			"gas_used",
+			"gas_price",
+			"block_idx",
 		).
 			From(db.TableCvmTransactionsTxdata).
-			LeftJoin(db.TableCvmTransactionsReceipts, db.TableCvmTransactionsTxdata+".hash = "+db.TableCvmTransactionsReceipts+".hash").
-			OrderDesc("block").
-			OrderAsc("idx").
-			Limit(uint64(p.TxLimit)).
-			Offset(uint64(p.TxOffset)).
-			LoadContext(ctx, &txList)
+			LeftJoin(dbr.I(db.TableCvmAccounts).As("F"), "id_from_addr = F.id")
+
+		if p.ListParams.StartTimeProvided {
+			sq = sq.Where("created_at >= ?", p.ListParams.StartTime)
+		}
+		if p.ListParams.EndTimeProvided {
+			sq = sq.Where("created_at < ?", p.ListParams.EndTime)
+		}
+
+		switch {
+		case p.BlockStart != nil:
+			sq = sq.OrderDesc("block_idx").
+				Where("block_idx <= ?", p.BlockStart.Uint64()*1000+999-uint64(p.TxID))
+		case p.BlockEnd != nil:
+			sq = sq.OrderAsc("block_idx").
+				Where("block_idx >= ?", p.BlockEnd.Uint64()*1000+999-uint64(p.TxID))
+		default:
+			sq = sq.OrderDesc("block_idx").
+				Where("block_idx IS NOT NULL")
+		}
+
+		if len(p.CAddresses) > 0 {
+			sq = sq.Distinct()
+			addressesSQL := strings.Join(p.CAddresses, "','")
+			addressesSQL = "'" + addressesSQL + "'"
+			sq = sq.From("(select id from cvm_accounts where address in (" + addressesSQL + ") ) sub,cvm_transactions_txdata")
+			sq = sq.Where("(id_from_addr=sub.id  OR id_to_addr=sub.id)")
+		}
+
+		sq = sq.Limit(uint64(p.TxLimit))
+		_, err = sq.LoadContext(ctx, &txList)
 		if err != nil {
 			return nil, err
 		}
@@ -119,6 +153,7 @@ func (r *Reader) ListCBlocks(ctx context.Context, p *params.ListCBlocksParams) (
 			(*dest).From = tx.FromAddr
 			(*dest).Status = fmtHex(uint64(tx.Status))
 			(*dest).GasUsed = fmtHex(tx.GasUsed)
+			(*dest).EffectiveGasPrice = fmtHex(tx.GasPrice)
 		}
 	}
 

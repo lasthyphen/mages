@@ -32,17 +32,49 @@ var (
 	ErrChainsConfigVMNotString     = errors.New("Chain config vm type is not a string")
 )
 
+type Aggregates struct {
+	AggregateMerge    uint64 `json:"AggregateMerge"`
+	StartTime         string `json:"startTime"`
+	EndTime           string `json:"endTime"`
+	TransactionVolume uint64 `json:"transactionVolume"`
+	TransactionCount  uint64 `json:"transactionCount"`
+	AddressCount      uint64 `json:"addressCount"`
+	OutputCount       uint64 `json:"outputCount"`
+	AssetCount        uint64 `json:"assetCount"`
+}
+
+type AggregatesMain struct {
+	Aggregates Aggregates `json:"aggregates,omitempty"`
+	StartTime  string     `json:"startTime"`
+	EndTime    string     `json:"endTime"`
+}
+
+type AggregatesFees struct {
+	AggregateMerge uint64 `json:"AggregateMerge"`
+	StartTime      string `json:"startTime"`
+	EndTime        string `json:"endTime"`
+	Txfee          uint64 `json:"txfee"`
+}
+
+type AggregatesFeesMain struct {
+	Aggregates AggregatesFees `json:"aggregates,omitempty"`
+	StartTime  string         `json:"startTime"`
+	EndTime    string         `json:"endTime"`
+}
+
 type Config struct {
-	NetworkID         uint32 `json:"networkID"`
-	Chains            `json:"chains"`
-	Services          `json:"services"`
-	MetricsListenAddr string `json:"metricsListenAddr"`
-	AdminListenAddr   string `json:"adminListenAddr"`
-	Features          map[string]struct{}
-	CchainID          string `json:"cchainId"`
-	CaminoGO          string `json:"caminogo"`
-	NodeInstance      string `json:"nodeInstance"`
-	AP5Activation     uint64
+	NetworkID           uint32 `json:"networkID"`
+	Chains              `json:"chains"`
+	Services            `json:"services"`
+	MetricsListenAddr   string `json:"metricsListenAddr"`
+	AdminListenAddr     string `json:"adminListenAddr"`
+	Features            map[string]struct{}
+	CchainID            string `json:"cchainId"`
+	CaminoNode          string `json:"caminoNode"`
+	NodeInstance        string `json:"nodeInstance"`
+	CacheUpdateInterval uint64 `json:"cacheUpdateInterval"`
+	AP5Activation       uint64 `json:"ap5Activation"`
+	BanffActivation     uint64 `json:"banffActivation"`
 }
 
 type Chain struct {
@@ -92,7 +124,10 @@ func NewFromFile(filePath string) (*Config, error) {
 	}
 
 	// Build logging config
-	loggingConf := logging.DefaultConfig
+	loggingConf := logging.Config{
+		DisplayLevel: logging.Info,
+		LogLevel:     logging.Debug,
+	}
 	loggingConf.Directory = v.GetString(keysLogDirectory)
 
 	dbdsn := servicesDBViper.GetString(keysServicesDBDSN)
@@ -113,6 +148,7 @@ func NewFromFile(filePath string) (*Config, error) {
 
 	networkID := v.GetUint32(keysNetworkID)
 	ap5Activation := version.GetApricotPhase5Time(networkID).Unix()
+	banffActivation := version.GetBanffTime(networkID).Unix()
 
 	// Put it all together
 	return &Config{
@@ -132,9 +168,11 @@ func NewFromFile(filePath string) (*Config, error) {
 				RODSN:  dbrodsn,
 			},
 		},
-		CchainID:      v.GetString(keysStreamProducerCchainID),
-		CaminoGO:      v.GetString(keysStreamProducerCaminogo),
-		NodeInstance:  v.GetString(keysStreamProducerNodeInstance),
-		AP5Activation: uint64(ap5Activation),
+		CchainID:            v.GetString(keysStreamProducerCchainID),
+		CaminoNode:          v.GetString(keysStreamProducerCaminoNode),
+		NodeInstance:        v.GetString(keysStreamProducerNodeInstance),
+		CacheUpdateInterval: uint64(v.GetInt(keysCacheUpdateInterval)),
+		AP5Activation:       uint64(ap5Activation),
+		BanffActivation:     uint64(banffActivation),
 	}, nil
 }

@@ -21,17 +21,25 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/lasthyphen/dijetsnodego/vms/platformvm/validator"
+
+	"github.com/lasthyphen/dijetsnodego/utils/constants"
+
+	p_genesis "github.com/lasthyphen/dijetsnodego/vms/platformvm/genesis"
+
+	"github.com/lasthyphen/dijetsnodego/vms/platformvm/txs"
+
+	"github.com/lasthyphen/dijetsnodego/vms/platformvm/blocks"
+
 	"github.com/lasthyphen/dijetsnodego/api/metrics"
 	"github.com/lasthyphen/dijetsnodego/codec"
 	"github.com/lasthyphen/dijetsnodego/genesis"
 	"github.com/lasthyphen/dijetsnodego/ids"
 	"github.com/lasthyphen/dijetsnodego/snow"
-	"github.com/lasthyphen/dijetsnodego/utils/hashing"
 	"github.com/lasthyphen/dijetsnodego/utils/logging"
 	"github.com/lasthyphen/dijetsnodego/utils/wrappers"
 	"github.com/lasthyphen/dijetsnodego/vms/components/djtx"
 	"github.com/lasthyphen/dijetsnodego/vms/components/verify"
-	"github.com/lasthyphen/dijetsnodego/vms/platformvm"
 	"github.com/lasthyphen/dijetsnodego/vms/proposervm/block"
 	"github.com/lasthyphen/dijetsnodego/vms/secp256k1fx"
 	"github.com/lasthyphen/mages/cfg"
@@ -40,7 +48,6 @@ import (
 	"github.com/lasthyphen/mages/services"
 	djtxIndexer "github.com/lasthyphen/mages/services/indexes/djtx"
 	"github.com/lasthyphen/mages/utils"
-	"github.com/palantir/stacktrace"
 )
 
 var (
@@ -56,9 +63,8 @@ type Writer struct {
 	networkID   uint32
 	djtxAssetID ids.ID
 
-	codec codec.Manager
-	djtx  *djtxIndexer.Writer
-	ctx   *snow.Context
+	djtx *djtxIndexer.Writer
+	ctx  *snow.Context
 }
 
 func NewWriter(networkID uint32, chainID string) (*Writer, error) {
@@ -88,7 +94,6 @@ func NewWriter(networkID uint32, chainID string) (*Writer, error) {
 		chainID:     chainID,
 		networkID:   networkID,
 		djtxAssetID: djtxAssetID,
-		codec:       platformvm.Codec,
 		djtx:        djtxIndexer.NewWriter(chainID, djtxAssetID),
 		ctx:         ctx,
 	}, nil
@@ -96,162 +101,67 @@ func NewWriter(networkID uint32, chainID string) (*Writer, error) {
 
 func (*Writer) Name() string { return "pvm-index" }
 
-func (w *Writer) initCtxPtx(p *platformvm.Tx) {
-	switch castTx := p.UnsignedTx.(type) {
-	case *platformvm.UnsignedAddValidatorTx:
-		for _, utxo := range castTx.UTXOs() {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		for _, utxo := range castTx.Stake {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		castTx.InitCtx(w.ctx)
-	case *platformvm.UnsignedAddSubnetValidatorTx:
-		for _, utxo := range castTx.UTXOs() {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		castTx.InitCtx(w.ctx)
-	case *platformvm.UnsignedAddDelegatorTx:
-		for _, utxo := range castTx.UTXOs() {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		for _, utxo := range castTx.Stake {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		castTx.InitCtx(w.ctx)
-	case *platformvm.UnsignedCreateSubnetTx:
-		for _, utxo := range castTx.UTXOs() {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		castTx.InitCtx(w.ctx)
-	case *platformvm.UnsignedCreateChainTx:
-		for _, utxo := range castTx.UTXOs() {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		castTx.InitCtx(w.ctx)
-	case *platformvm.UnsignedImportTx:
-		for _, utxo := range castTx.UTXOs() {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		for _, out := range castTx.Outs {
-			out.InitCtx(w.ctx)
-		}
-		castTx.InitCtx(w.ctx)
-	case *platformvm.UnsignedExportTx:
-		for _, utxo := range castTx.UTXOs() {
-			utxo.Out.InitCtx(w.ctx)
-		}
-		for _, out := range castTx.ExportedOutputs {
-			out.InitCtx(w.ctx)
-		}
-		castTx.InitCtx(w.ctx)
-	case *platformvm.UnsignedAdvanceTimeTx:
-		castTx.InitCtx(w.ctx)
-	case *platformvm.UnsignedRewardValidatorTx:
-		castTx.InitCtx(w.ctx)
-	default:
-	}
-}
-
-func (w *Writer) initCtx(b platformvm.Block) {
-	switch blk := b.(type) {
-	case *platformvm.ProposalBlock:
-		w.initCtxPtx(&blk.Tx)
-	case *platformvm.StandardBlock:
-		for _, tx := range blk.Txs {
-			w.initCtxPtx(tx)
-		}
-	case *platformvm.AtomicBlock:
-		w.initCtxPtx(&blk.Tx)
-	case *platformvm.AbortBlock:
-	case *platformvm.CommitBlock:
-	default:
-	}
-}
-
-type PtxDataProposerModel struct {
-	ID           string    `json:"tx"`
-	ParentID     string    `json:"parentID"`
-	PChainHeight uint64    `json:"pChainHeight"`
-	Proposer     string    `json:"proposer"`
-	TimeStamp    time.Time `json:"timeStamp"`
-}
-
-func NewPtxDataProposerModel(b block.Block) *PtxDataProposerModel {
-	switch properBlockDetail := b.(type) {
-	case block.SignedBlock:
-		return &PtxDataProposerModel{
-			ID:           properBlockDetail.ID().String(),
-			ParentID:     properBlockDetail.ParentID().String(),
-			PChainHeight: properBlockDetail.PChainHeight(),
-			Proposer:     properBlockDetail.Proposer().String(),
-			TimeStamp:    properBlockDetail.Timestamp(),
-		}
-	default:
-		return &PtxDataProposerModel{
-			ID:           properBlockDetail.ID().String(),
-			PChainHeight: 0,
-			Proposer:     "",
-		}
-	}
-}
-
 type PtxDataModel struct {
-	Tx           *platformvm.Tx        `json:"tx,omitempty"`
-	TxType       *string               `json:"txType,omitempty"`
-	Block        *platformvm.Block     `json:"block,omitempty"`
-	BlockID      *string               `json:"blockID,omitempty"`
-	BlockType    *string               `json:"blockType,omitempty"`
-	Proposer     *PtxDataProposerModel `json:"proposer,omitempty"`
-	ProposerType *string               `json:"proposerType,omitempty"`
+	Tx        *txs.Tx               `json:"tx,omitempty"`
+	TxType    *string               `json:"txType,omitempty"`
+	Block     *blocks.Block         `json:"block,omitempty"`
+	BlockID   *string               `json:"blockID,omitempty"`
+	BlockType *string               `json:"blockType,omitempty"`
+	Proposer  *models.BlockProposal `json:"proposer,omitempty"`
 }
 
-func (w *Writer) ParseJSON(txBytes []byte) ([]byte, error) {
-	parsePlatformTx := func(b []byte) (*PtxDataModel, error) {
-		var block platformvm.Block
-		_, err := w.codec.Unmarshal(b, &block)
-		if err != nil {
-			var blockTx platformvm.Tx
-			_, err = w.codec.Unmarshal(b, &blockTx)
-			if err != nil {
-				return nil, err
-			}
-			w.initCtxPtx(&blockTx)
-			txtype := reflect.TypeOf(&blockTx)
-			txtypeS := txtype.String()
-			return &PtxDataModel{
-				Tx:     &blockTx,
-				TxType: &txtypeS,
-			}, nil
-		}
-		w.initCtx(block)
-		blkID := ids.ID(hashing.ComputeHash256Array(b))
-		blkIDS := blkID.String()
-		btype := reflect.TypeOf(block)
+func (w *Writer) ParseJSON(b []byte, proposer *models.BlockProposal) ([]byte, error) {
+	// Try and parse as a tx
+	tx, err := txs.Parse(blocks.GenesisCodec, b)
+	if err == nil {
+		tx.Unsigned.InitCtx(w.ctx)
+		// TODO: Should we be reporting the type of [tx.Unsigned] rather than
+		//       `tx`?
+		txtype := reflect.TypeOf(tx)
+		txtypeS := txtype.String()
+		return json.Marshal(&PtxDataModel{
+			Tx:     tx,
+			TxType: &txtypeS,
+		})
+	}
+
+	// Try and parse as block
+	blk, err := blocks.Parse(blocks.GenesisCodec, b)
+	if err == nil {
+		blk.InitCtx(w.ctx)
+		blkID := blk.ID()
+		blkIDStr := blkID.String()
+		btype := reflect.TypeOf(blk)
 		btypeS := btype.String()
-		return &PtxDataModel{
-			BlockID:   &blkIDS,
-			Block:     &block,
+		return json.Marshal(&PtxDataModel{
+			BlockID:   &blkIDStr,
+			Block:     &blk,
 			BlockType: &btypeS,
-		}, nil
+		})
 	}
-	proposerBlock, err := block.Parse(txBytes)
-	if err != nil {
-		platformBlock, err := parsePlatformTx(txBytes)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(platformBlock)
-	}
-	platformBlock, err := parsePlatformTx(proposerBlock.Block())
+
+	// Try and parse as proposervm block
+	proposerBlock, err := block.Parse(b)
 	if err != nil {
 		return nil, err
 	}
-	platformBlock.Proposer = NewPtxDataProposerModel(proposerBlock)
-	pbtype := reflect.TypeOf(proposerBlock)
-	pbtypeS := pbtype.String()
-	platformBlock.ProposerType = &pbtypeS
-	return json.Marshal(platformBlock)
+
+	blk, err = blocks.Parse(blocks.GenesisCodec, proposerBlock.Block())
+	if err != nil {
+		return nil, err
+	}
+
+	blk.InitCtx(w.ctx)
+	blkID := blk.ID()
+	blkIDStr := blkID.String()
+	btype := reflect.TypeOf(blk)
+	btypeS := btype.String()
+	return json.Marshal(&PtxDataModel{
+		BlockID:   &blkIDStr,
+		Block:     &blk,
+		BlockType: &btypeS,
+		Proposer:  models.NewBlockProposal(proposerBlock, nil),
+	})
 }
 
 func (w *Writer) ConsumeConsensus(_ context.Context, _ *utils.Connections, _ services.Consumable, _ db.Persist) error {
@@ -282,12 +192,8 @@ func (w *Writer) Bootstrap(ctx context.Context, conns *utils.Connections, persis
 		return err
 	}
 
-	platformGenesis := &platformvm.Genesis{}
-	_, err = platformvm.GenesisCodec.Unmarshal(genesisBytes, platformGenesis)
+	platformGenesis, err := p_genesis.Parse(genesisBytes)
 	if err != nil {
-		return err
-	}
-	if err = platformGenesis.Initialize(); err != nil {
 		return err
 	}
 
@@ -301,7 +207,6 @@ func (w *Writer) Bootstrap(ctx context.Context, conns *utils.Connections, persis
 	for idx, utxo := range platformGenesis.UTXOs {
 		select {
 		case <-ctx.Done():
-			break
 		default:
 		}
 
@@ -325,7 +230,6 @@ func (w *Writer) Bootstrap(ctx context.Context, conns *utils.Connections, persis
 	for _, tx := range append(platformGenesis.Validators, platformGenesis.Chains...) {
 		select {
 		case <-ctx.Done():
-			break
 		default:
 		}
 
@@ -335,8 +239,8 @@ func (w *Writer) Bootstrap(ctx context.Context, conns *utils.Connections, persis
 	return errs.Err
 }
 
-func initializeTx(version uint16, c codec.Manager, tx platformvm.Tx) error {
-	unsignedBytes, err := c.Marshal(version, &tx.UnsignedTx)
+func initializeTx(version uint16, c codec.Manager, tx txs.Tx) error {
+	unsignedBytes, err := c.Marshal(version, &tx.Unsigned)
 	if err != nil {
 		return err
 	}
@@ -349,90 +253,53 @@ func initializeTx(version uint16, c codec.Manager, tx platformvm.Tx) error {
 }
 
 func (w *Writer) indexBlock(ctx services.ConsumerCtx, proposerblockBytes []byte) error {
-	var pblock platformvm.Block
-	var ver uint16
-	var err error
-
 	proposerBlock, err := block.Parse(proposerblockBytes)
-	blockBytes := proposerblockBytes
-	if err == nil {
-		ver, err = w.codec.Unmarshal(proposerBlock.Block(), &pblock)
-		if err != nil {
-			return stacktrace.Propagate(err, "proposer bytes")
-		}
-		blockBytes = append([]byte{}, proposerBlock.Block()...)
-	} else {
+	var innerBlockBytes []byte
+	if err != nil {
+		innerBlockBytes = proposerblockBytes
+		// We use the "nil"ness below, so we explicitly empty the value here to
+		// avoid unexpected errors
 		proposerBlock = nil
-		ver, err = w.codec.Unmarshal(blockBytes, &pblock)
-		if err != nil {
-			return stacktrace.Propagate(err, "block bytes")
-		}
+	} else {
+		innerBlockBytes = proposerBlock.Block()
 	}
 
-	blkID := ids.ID(hashing.ComputeHash256Array(blockBytes))
-
-	if proposerBlock != nil {
-		proposerBlkID := ids.ID(hashing.ComputeHash256Array(proposerblockBytes))
-		var pvmProposer *db.PvmProposer
-		switch properBlockDetail := proposerBlock.(type) {
-		case block.SignedBlock:
-			pvmProposer = &db.PvmProposer{
-				ID:            properBlockDetail.ID().String(),
-				ParentID:      properBlockDetail.ParentID().String(),
-				BlkID:         blkID.String(),
-				ProposerBlkID: proposerBlkID.String(),
-				PChainHeight:  properBlockDetail.PChainHeight(),
-				Proposer:      properBlockDetail.Proposer().String(),
-				TimeStamp:     properBlockDetail.Timestamp(),
-				CreatedAt:     ctx.Time(),
-			}
-		default:
-			pvmProposer = &db.PvmProposer{
-				ID:            properBlockDetail.ID().String(),
-				ParentID:      properBlockDetail.ParentID().String(),
-				BlkID:         blkID.String(),
-				ProposerBlkID: proposerBlkID.String(),
-				PChainHeight:  0,
-				Proposer:      "",
-				TimeStamp:     ctx.Time(),
-				CreatedAt:     ctx.Time(),
-			}
-		}
-		err := ctx.Persist().InsertPvmProposer(ctx.Ctx(), ctx.DB(), pvmProposer, cfg.PerformUpdates)
-		if err != nil {
-			return err
-		}
+	blk, err := blocks.Parse(blocks.GenesisCodec, innerBlockBytes)
+	if err != nil {
+		return err
 	}
+
+	blkID := blk.ID()
+	ctxTime := ctx.Time()
+	pvmProposer := models.NewBlockProposal(proposerBlock, &ctxTime)
 
 	errs := wrappers.Errs{}
 
-	switch blk := pblock.(type) {
-	case *platformvm.ProposalBlock:
-		errs.Add(
-			initializeTx(ver, w.codec, blk.Tx),
-			w.indexCommonBlock(ctx, blkID, models.BlockTypeProposal, blk.CommonBlock, blockBytes),
-			w.indexTransaction(ctx, blkID, blk.Tx, false),
-		)
-	case *platformvm.StandardBlock:
-		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeStandard, blk.CommonBlock, blockBytes))
-		for _, tx := range blk.Txs {
-			errs.Add(
-				initializeTx(ver, w.codec, *tx),
-				w.indexTransaction(ctx, blkID, *tx, false),
-			)
-		}
-	case *platformvm.AtomicBlock:
-		errs.Add(
-			initializeTx(ver, w.codec, blk.Tx),
-			w.indexCommonBlock(ctx, blkID, models.BlockTypeProposal, blk.CommonBlock, blockBytes),
-			w.indexTransaction(ctx, blkID, blk.Tx, false),
-		)
-	case *platformvm.AbortBlock:
-		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeAbort, blk.CommonBlock, blockBytes))
-	case *platformvm.CommitBlock:
-		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeCommit, blk.CommonBlock, blockBytes))
+	switch blk := blk.(type) {
+	case *blocks.ApricotProposalBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeProposal, blk.CommonBlock, pvmProposer, innerBlockBytes))
+	case *blocks.ApricotStandardBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeStandard, blk.CommonBlock, pvmProposer, innerBlockBytes))
+	case *blocks.ApricotAtomicBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeProposal, blk.CommonBlock, pvmProposer, innerBlockBytes))
+	case *blocks.ApricotAbortBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeAbort, blk.CommonBlock, pvmProposer, innerBlockBytes))
+	case *blocks.ApricotCommitBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeCommit, blk.CommonBlock, pvmProposer, innerBlockBytes))
+	case *blocks.BanffProposalBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeProposal, blk.CommonBlock, pvmProposer, innerBlockBytes))
+	case *blocks.BanffStandardBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeStandard, blk.CommonBlock, pvmProposer, innerBlockBytes))
+	case *blocks.BanffAbortBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeProposal, blk.CommonBlock, pvmProposer, innerBlockBytes))
+	case *blocks.BanffCommitBlock:
+		errs.Add(w.indexCommonBlock(ctx, blkID, models.BlockTypeCommit, blk.CommonBlock, pvmProposer, innerBlockBytes))
+
 	default:
-		return fmt.Errorf("unknown type %s", reflect.TypeOf(pblock))
+		return fmt.Errorf("unknown type %s", reflect.TypeOf(blk))
+	}
+	for _, tx := range blk.Txs() {
+		errs.Add(w.indexTransaction(ctx, blkID, *tx, false))
 	}
 
 	return errs.Err
@@ -442,7 +309,8 @@ func (w *Writer) indexCommonBlock(
 	ctx services.ConsumerCtx,
 	blkID ids.ID,
 	blkType models.BlockType,
-	blk platformvm.CommonBlock,
+	blk blocks.CommonBlock,
+	proposer *models.BlockProposal,
 	blockBytes []byte,
 ) error {
 	if len(blockBytes) > MaxSerializationLen {
@@ -457,119 +325,170 @@ func (w *Writer) indexCommonBlock(
 		Serialization: blockBytes,
 		CreatedAt:     ctx.Time(),
 		Height:        blk.Height(),
+		Proposer:      proposer.Proposer,
+		ProposerTime:  proposer.TimeStamp,
 	}
 	return ctx.Persist().InsertPvmBlocks(ctx.Ctx(), ctx.DB(), pvmBlocks, cfg.PerformUpdates)
 }
 
-func (w *Writer) indexTransaction(ctx services.ConsumerCtx, blkID ids.ID, tx platformvm.Tx, genesis bool) error {
+func (w *Writer) indexTransaction(ctx services.ConsumerCtx, blkID ids.ID, tx txs.Tx, genesis bool) error {
 	var (
+		txID   = tx.ID()
 		baseTx djtx.BaseTx
 		typ    models.TransactionType
+		ins    *djtxIndexer.AddInsContainer
+		outs   *djtxIndexer.AddOutsContainer
 	)
 
-	var ins *djtxIndexer.AddInsContainer
-	var outs *djtxIndexer.AddOutsContainer
-
 	var err error
-	switch castTx := tx.UnsignedTx.(type) {
-	case *platformvm.UnsignedAddValidatorTx:
+	switch castTx := tx.Unsigned.(type) {
+	case *txs.AddValidatorTx:
 		baseTx = castTx.BaseTx.BaseTx
 		outs = &djtxIndexer.AddOutsContainer{
-			Outs:    castTx.Stake,
+			Outs:    castTx.StakeOuts,
 			Stake:   true,
 			ChainID: w.chainID,
 		}
 		typ = models.TransactionTypeAddValidator
-		err = w.InsertTransactionValidator(ctx, baseTx.ID(), castTx.Validator)
+		err = w.InsertTransactionValidator(ctx, txID, castTx.Validator)
 		if err != nil {
 			return err
 		}
-		err = w.InsertTransactionBlock(ctx, baseTx.ID(), blkID)
+		err = w.InsertTransactionBlock(ctx, txID, blkID)
 		if err != nil {
 			return err
 		}
 		if castTx.RewardsOwner != nil {
-			err = w.insertTransactionsRewardsOwners(ctx, castTx.RewardsOwner, baseTx, castTx.Stake)
+			err = w.insertTransactionsRewardsOwners(ctx, txID, castTx.RewardsOwner, baseTx, castTx.StakeOuts)
 			if err != nil {
 				return err
 			}
 		}
-	case *platformvm.UnsignedAddSubnetValidatorTx:
+	case *txs.AddSubnetValidatorTx:
 		baseTx = castTx.BaseTx.BaseTx
 		typ = models.TransactionTypeAddSubnetValidator
-		err = w.InsertTransactionBlock(ctx, baseTx.ID(), blkID)
+		err = w.InsertTransactionBlock(ctx, txID, blkID)
 		if err != nil {
 			return err
 		}
-	case *platformvm.UnsignedAddDelegatorTx:
+	case *txs.AddDelegatorTx:
 		baseTx = castTx.BaseTx.BaseTx
 		outs = &djtxIndexer.AddOutsContainer{
-			Outs:    castTx.Stake,
+			Outs:    castTx.StakeOuts,
 			Stake:   true,
 			ChainID: w.chainID,
 		}
 		typ = models.TransactionTypeAddDelegator
-		err = w.InsertTransactionValidator(ctx, baseTx.ID(), castTx.Validator)
+		err = w.InsertTransactionValidator(ctx, txID, castTx.Validator)
 		if err != nil {
 			return err
 		}
-		err = w.InsertTransactionBlock(ctx, baseTx.ID(), blkID)
+		err = w.InsertTransactionBlock(ctx, txID, blkID)
 		if err != nil {
 			return err
 		}
-		if castTx.RewardsOwner != nil {
-			err = w.insertTransactionsRewardsOwners(ctx, castTx.RewardsOwner, baseTx, castTx.Stake)
-			if err != nil {
-				return err
-			}
+		err = w.insertTransactionsRewardsOwners(ctx, txID, castTx.DelegationRewardsOwner, baseTx, castTx.StakeOuts)
+		if err != nil {
+			return err
 		}
-	case *platformvm.UnsignedCreateSubnetTx:
+	case *txs.CreateSubnetTx:
 		baseTx = castTx.BaseTx.BaseTx
 		typ = models.TransactionTypeCreateSubnet
-		err = w.InsertTransactionBlock(ctx, baseTx.ID(), blkID)
+		err = w.InsertTransactionBlock(ctx, txID, blkID)
 		if err != nil {
 			return err
 		}
-	case *platformvm.UnsignedCreateChainTx:
+	case *txs.CreateChainTx:
 		baseTx = castTx.BaseTx.BaseTx
 		typ = models.TransactionTypeCreateChain
-		err = w.InsertTransactionBlock(ctx, baseTx.ID(), blkID)
+		err = w.InsertTransactionBlock(ctx, txID, blkID)
 		if err != nil {
 			return err
 		}
-	case *platformvm.UnsignedImportTx:
+	case *txs.ImportTx:
 		baseTx = castTx.BaseTx.BaseTx
 		ins = &djtxIndexer.AddInsContainer{
 			Ins:     castTx.ImportedInputs,
 			ChainID: castTx.SourceChain.String(),
 		}
 		typ = models.TransactionTypePVMImport
-		err = w.InsertTransactionBlock(ctx, baseTx.ID(), blkID)
+		err = w.InsertTransactionBlock(ctx, txID, blkID)
 		if err != nil {
 			return err
 		}
-	case *platformvm.UnsignedExportTx:
+	case *txs.ExportTx:
 		baseTx = castTx.BaseTx.BaseTx
 		outs = &djtxIndexer.AddOutsContainer{
 			Outs:    castTx.ExportedOutputs,
 			ChainID: castTx.DestinationChain.String(),
 		}
 		typ = models.TransactionTypePVMExport
-		err = w.InsertTransactionBlock(ctx, baseTx.ID(), blkID)
+		err = w.InsertTransactionBlock(ctx, txID, blkID)
 		if err != nil {
 			return err
 		}
-	case *platformvm.UnsignedAdvanceTimeTx:
+	case *txs.AdvanceTimeTx:
 		return nil
-	case *platformvm.UnsignedRewardValidatorTx:
+	case *txs.RewardValidatorTx:
 		rewards := &db.Rewards{
-			ID:                 castTx.ID().String(),
+			ID:                 txID.String(),
 			BlockID:            blkID.String(),
 			Txid:               castTx.TxID.String(),
-			Shouldprefercommit: castTx.InitiallyPrefersCommit(nil),
+			Shouldprefercommit: castTx.ShouldPreferCommit,
 			CreatedAt:          ctx.Time(),
 		}
 		return ctx.Persist().InsertRewards(ctx.Ctx(), ctx.DB(), rewards, cfg.PerformUpdates)
+	case *txs.RemoveSubnetValidatorTx:
+		baseTx = castTx.BaseTx.BaseTx
+		typ = models.TransactionTypeRemoveSubnetValidator
+	case *txs.TransformSubnetTx:
+		baseTx = castTx.BaseTx.BaseTx
+		typ = models.TransactionTypeTransformSubnet
+	case *txs.AddPermissionlessValidatorTx:
+		baseTx = castTx.BaseTx.BaseTx
+		typ = models.TransactionTypeAddPermissionlessValidator
+
+		// TODO: Handle this for all subnetIDs
+		if castTx.Subnet != constants.PrimaryNetworkID {
+			break
+		}
+
+		outs = &djtxIndexer.AddOutsContainer{
+			Outs:    castTx.StakeOuts,
+			Stake:   true,
+			ChainID: w.chainID,
+		}
+		err := w.InsertTransactionValidator(ctx, txID, castTx.Validator)
+		if err != nil {
+			return err
+		}
+		// TODO: What to do about the different rewards owners?
+		err = w.insertTransactionsRewardsOwners(ctx, txID, castTx.ValidatorRewardsOwner, baseTx, castTx.StakeOuts)
+		if err != nil {
+			return err
+		}
+	case *txs.AddPermissionlessDelegatorTx:
+		baseTx = castTx.BaseTx.BaseTx
+		typ = models.TransactionTypeAddPermissionlessDelegator
+
+		// TODO: Handle this for all subnetIDs
+		if castTx.Subnet != constants.PrimaryNetworkID {
+			break
+		}
+
+		outs = &djtxIndexer.AddOutsContainer{
+			Outs:    castTx.StakeOuts,
+			Stake:   true,
+			ChainID: w.chainID,
+		}
+		err := w.InsertTransactionValidator(ctx, txID, castTx.Validator)
+		if err != nil {
+			return err
+		}
+		err = w.insertTransactionsRewardsOwners(ctx, txID, castTx.DelegationRewardsOwner, baseTx, castTx.StakeOuts)
+		if err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown tx type %s", reflect.TypeOf(castTx))
 	}
@@ -577,7 +496,8 @@ func (w *Writer) indexTransaction(ctx services.ConsumerCtx, blkID ids.ID, tx pla
 	return w.djtx.InsertTransaction(
 		ctx,
 		tx.Bytes(),
-		tx.UnsignedBytes(),
+		tx.ID(),
+		tx.Unsigned.Bytes(),
 		&baseTx,
 		tx.Creds,
 		typ,
@@ -588,12 +508,12 @@ func (w *Writer) indexTransaction(ctx services.ConsumerCtx, blkID ids.ID, tx pla
 	)
 }
 
-func (w *Writer) insertTransactionsRewardsOwners(ctx services.ConsumerCtx, rewardsOwner verify.Verifiable, baseTx djtx.BaseTx, stakeOuts []*djtx.TransferableOutput) error {
+func (w *Writer) insertTransactionsRewardsOwners(ctx services.ConsumerCtx, txID ids.ID, rewardsOwner verify.Verifiable, baseTx djtx.BaseTx, stakeOuts []*djtx.TransferableOutput) error {
 	var err error
 
 	owner, ok := rewardsOwner.(*secp256k1fx.OutputOwners)
 	if !ok {
-		return fmt.Errorf("rewards owner %v", reflect.TypeOf(rewardsOwner))
+		return fmt.Errorf("rewards owner %T", rewardsOwner)
 	}
 
 	// Ingest each Output Address
@@ -601,7 +521,7 @@ func (w *Writer) insertTransactionsRewardsOwners(ctx services.ConsumerCtx, rewar
 		addrid := ids.ShortID{}
 		copy(addrid[:], addr)
 		txRewardsOwnerAddress := &db.TransactionsRewardsOwnersAddress{
-			ID:          baseTx.ID().String(),
+			ID:          txID.String(),
 			Address:     addrid.String(),
 			OutputIndex: uint32(ipos),
 			UpdatedAt:   time.Now().UTC(),
@@ -616,11 +536,11 @@ func (w *Writer) insertTransactionsRewardsOwners(ctx services.ConsumerCtx, rewar
 	// write out outputs in the len(outs) and len(outs)+1 positions to identify these rewards
 	outcnt := len(baseTx.Outs) + len(stakeOuts)
 	for ipos := outcnt; ipos < outcnt+2; ipos++ {
-		outputID := baseTx.ID().Prefix(uint64(ipos))
+		outputID := txID.Prefix(uint64(ipos))
 
 		txRewardsOutputs := &db.TransactionsRewardsOwnersOutputs{
 			ID:            outputID.String(),
-			TransactionID: baseTx.ID().String(),
+			TransactionID: txID.String(),
 			OutputIndex:   uint32(ipos),
 			CreatedAt:     ctx.Time(),
 		}
@@ -632,7 +552,7 @@ func (w *Writer) insertTransactionsRewardsOwners(ctx services.ConsumerCtx, rewar
 	}
 
 	txRewardsOwner := &db.TransactionsRewardsOwners{
-		ID:        baseTx.ID().String(),
+		ID:        txID.String(),
 		ChainID:   w.chainID,
 		Threshold: owner.Threshold,
 		Locktime:  owner.Locktime,
@@ -642,7 +562,7 @@ func (w *Writer) insertTransactionsRewardsOwners(ctx services.ConsumerCtx, rewar
 	return ctx.Persist().InsertTransactionsRewardsOwners(ctx.Ctx(), ctx.DB(), txRewardsOwner, cfg.PerformUpdates)
 }
 
-func (w *Writer) InsertTransactionValidator(ctx services.ConsumerCtx, txID ids.ID, validator platformvm.Validator) error {
+func (w *Writer) InsertTransactionValidator(ctx services.ConsumerCtx, txID ids.ID, validator validator.Validator) error {
 	transactionsValidator := &db.TransactionsValidator{
 		ID:        txID.String(),
 		NodeID:    validator.NodeID.String(),

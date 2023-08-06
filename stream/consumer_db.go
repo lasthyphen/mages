@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/lasthyphen/mages/cfg"
 	"github.com/lasthyphen/mages/db"
 	"github.com/lasthyphen/mages/services"
@@ -43,7 +45,7 @@ type consumerDB struct {
 	topicName string
 }
 
-type serviceConsumerFactory func(uint32, string, string) (services.Consumer, error)
+type serviceConsumerFactory func(uint32, string, string, *cfg.Config) (services.Consumer, error)
 
 // NewConsumerFactory returns a processorFactory for the given service consumer
 func NewConsumerDBFactory(factory serviceConsumerFactory, eventType EventType) ProcessorFactoryChainDB {
@@ -76,7 +78,7 @@ func NewConsumerDBFactory(factory serviceConsumerFactory, eventType EventType) P
 		sc.InitConsumeMetrics()
 
 		var err error
-		c.consumer, err = factory(conf.NetworkID, chainVM, chainID)
+		c.consumer, err = factory(conf.NetworkID, chainVM, chainID, &conf)
 		if err != nil {
 			_ = c.Close()
 			return nil, err
@@ -122,7 +124,9 @@ func (c *consumerDB) Consume(conns *utils.Connections, msg *Message) error {
 	defer func() {
 		err := collectors.Collect()
 		if err != nil {
-			c.sc.Log.Error("collectors.Collect: %s", err)
+			c.sc.Log.Error("failed collecting",
+				zap.Error(err),
+			)
 		}
 	}()
 
@@ -138,7 +142,9 @@ func (c *consumerDB) Consume(conns *utils.Connections, msg *Message) error {
 	if err != nil {
 		c.Failure()
 		collectors.Error()
-		c.sc.Log.Error("consumer.Consume: %s", err)
+		c.sc.Log.Error("failed consuming",
+			zap.Error(err),
+		)
 		return err
 	}
 	c.Success()

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/lasthyphen/dijetsnodego/utils/logging"
+	"github.com/lasthyphen/mages/caching"
 	"github.com/lasthyphen/mages/cfg"
 	"github.com/lasthyphen/mages/db"
 	"github.com/lasthyphen/mages/models"
@@ -133,7 +134,7 @@ func TestCollectInsAndOuts(t *testing.T) {
 	}
 }
 
-func TestAggregateTxfee(t *testing.T) {
+func TestAggregates(t *testing.T) {
 	reader, closeFn := newTestIndex(t)
 	defer closeFn()
 
@@ -141,53 +142,236 @@ func TestAggregateTxfee(t *testing.T) {
 
 	persist := db.NewPersist()
 
-	sess, _ := reader.conns.DB().NewSession("test_aggregate_tx_fee", cfg.RequestTimeout)
-	_, _ = sess.DeleteFrom("avm_transactions").ExecContext(ctx)
+	sessTx, _ := reader.conns.DB().NewSession("test_aggregate_tx_fee", cfg.RequestTimeout)
+	_, _ = sessTx.DeleteFrom("avm_transactions").ExecContext(ctx)
 
-	tnow := time.Now().UTC().Truncate(1 * time.Second).Add(-1 * time.Hour)
+	sessOuts, _ := reader.conns.DB().NewSession("test_aggregate_tx", cfg.RequestTimeout)
+	_, _ = sessOuts.DeleteFrom("avm_outputs").ExecContext(ctx)
 
+	timeNow := time.Now().UTC().Truncate(1 * time.Second)
+	yesterdayDateTime := time.Now().UTC().AddDate(0, 0, -1)
+	prevWeekDateTime := time.Now().UTC().AddDate(0, 0, -7)
+	prevMonthDateTime := time.Now().UTC().AddDate(0, -1, 0)
+
+	// Add transaction and output to test last days' aggregates
 	transaction := &db.Transactions{
 		ID:        "id1",
 		ChainID:   "cid",
 		Type:      "type",
 		Txfee:     10,
-		CreatedAt: tnow,
+		CreatedAt: timeNow.Add(-1 * time.Hour),
 	}
-	_ = persist.InsertTransactionsAtomic(ctx, sess, transaction, false)
+	_ = persist.InsertTransactions(ctx, sessTx, transaction, false)
+	output := &db.Outputs{
+		ID:            "id1",
+		TransactionID: "id1",
+		ChainID:       "cid",
+		CreatedAt:     timeNow.Add(-1 * time.Hour),
+	}
+	_ = persist.InsertOutputs(ctx, sessOuts, output, false)
 
+	err := reader.sc.AggregatesCache.GetAggregatesFeesAndUpdate(
+		reader.sc.Chains,
+		reader.conns,
+		"cid",
+		yesterdayDateTime,
+		timeNow.Add(1*time.Hour),
+		"day")
+	if err != nil {
+		t.Error("error", err)
+	}
+	err = reader.sc.AggregatesCache.GetAggregatesAndUpdate(
+		reader.sc.Chains,
+		reader.conns,
+		"cid",
+		yesterdayDateTime,
+		timeNow.Add(1*time.Hour),
+		"day")
+	if err != nil {
+		t.Error("error", err)
+	}
+
+	// Add transaction and output to test last week's aggregates
 	transaction = &db.Transactions{
 		ID:        "id2",
 		ChainID:   "cid",
 		Type:      "type",
 		Txfee:     15,
-		CreatedAt: tnow.Add(-1 * time.Hour),
+		CreatedAt: timeNow.Add(-48 * time.Hour),
 	}
-	_ = persist.InsertTransactionsAtomic(ctx, sess, transaction, false)
+	_ = persist.InsertTransactions(ctx, sessTx, transaction, false)
+	output = &db.Outputs{
+		ID:            "id2",
+		TransactionID: "id2",
+		ChainID:       "cid",
+		CreatedAt:     timeNow.Add(-48 * time.Hour),
+	}
+	_ = persist.InsertOutputs(ctx, sessOuts, output, false)
 
-	starttime := tnow.Add(-2 * time.Hour)
-	endtime := tnow.Add(1 * time.Second)
-	p := params.TxfeeAggregateParams{ListParams: params.ListParams{StartTime: starttime, EndTime: endtime}}
-	agg, err := reader.TxfeeAggregate(ctx, &p)
+	err = reader.sc.AggregatesCache.GetAggregatesFeesAndUpdate(
+		reader.sc.Chains,
+		reader.conns,
+		"cid",
+		prevWeekDateTime,
+		timeNow.Add(1*time.Hour),
+		"week")
 	if err != nil {
 		t.Error("error", err)
 	}
-	if agg.TxfeeAggregates.Txfee != models.TokenAmount("25") {
-		t.Error("aggregate tx invalid expected ", agg.TxfeeAggregates.Txfee)
+	err = reader.sc.AggregatesCache.GetAggregatesAndUpdate(
+		reader.sc.Chains,
+		reader.conns,
+		"cid",
+		prevWeekDateTime,
+		timeNow.Add(1*time.Hour),
+		"week")
+	if err != nil {
+		t.Error("error", err)
 	}
-	if agg.StartTime != starttime || agg.EndTime != endtime {
+
+	// Add transaction and output to test last month's aggregates
+	transaction = &db.Transactions{
+		ID:        "id3",
+		ChainID:   "cid",
+		Type:      "type",
+		Txfee:     20,
+		CreatedAt: timeNow.Add(-200 * time.Hour),
+	}
+	_ = persist.InsertTransactions(ctx, sessTx, transaction, false)
+	output = &db.Outputs{
+		ID:            "id3",
+		TransactionID: "id3",
+		ChainID:       "cid",
+		CreatedAt:     timeNow.Add(-200 * time.Hour),
+	}
+	_ = persist.InsertOutputs(ctx, sessOuts, output, false)
+
+	err = reader.sc.AggregatesCache.GetAggregatesFeesAndUpdate(
+		reader.sc.Chains,
+		reader.conns,
+		"cid",
+		prevMonthDateTime,
+		timeNow.Add(1*time.Hour),
+		"month")
+	if err != nil {
+		t.Error("error", err)
+	}
+	err = reader.sc.AggregatesCache.GetAggregatesAndUpdate(
+		reader.sc.Chains,
+		reader.conns,
+		"cid",
+		prevMonthDateTime,
+		timeNow.Add(1*time.Hour),
+		"month")
+	if err != nil {
+		t.Error("error", err)
+	}
+
+	// Test last month's aggregates
+	startTime := timeNow.Add(-250 * time.Hour)
+	endTime := timeNow.Add(1 * time.Hour)
+
+	feeAggregateParams := params.TxfeeAggregateParams{
+		ListParams: params.ListParams{StartTime: startTime, EndTime: endTime},
+		ChainIDs:   []string{"cid"},
+	}
+	aggFees, err := reader.TxfeeAggregate(reader.sc.AggregatesCache, &feeAggregateParams)
+	if err != nil {
+		t.Error("error", err)
+	}
+	if aggFees.TxfeeAggregates.Txfee != 45 {
+		t.Errorf("Expected %d tx aggregate fees", 45)
+	}
+	if aggFees.StartTime != startTime || aggFees.EndTime != endTime {
+		t.Error("aggregate tx invalid")
+	}
+	aggregateParams := params.AggregateParams{
+		ListParams: params.ListParams{StartTime: startTime, EndTime: endTime},
+		ChainIDs:   []string{"cid"},
+	}
+	agg, err := reader.Aggregate(reader.sc.AggregatesCache, &aggregateParams)
+	if err != nil {
+		t.Error("error", err)
+	}
+	if agg.Aggregates.TransactionCount != 3 {
+		t.Errorf("Expected %d txs", 3)
+	}
+	if agg.StartTime != startTime || agg.EndTime != endTime {
 		t.Error("aggregate tx invalid")
 	}
 
-	p = params.TxfeeAggregateParams{ListParams: params.ListParams{StartTime: tnow.Add(-50 * time.Minute), EndTime: tnow.Add(1 * time.Second)}}
-	agg, _ = reader.TxfeeAggregate(ctx, &p)
+	// Test last week's aggregate fees
+	startTime = timeNow.Add(-50 * time.Hour)
+	endTime = timeNow.Add(1 * time.Hour)
 
-	if agg.TxfeeAggregates.Txfee != models.TokenAmount("10") {
-		t.Error("aggregate tx invalid expected ", agg.TxfeeAggregates.Txfee)
+	feeAggregateParams = params.TxfeeAggregateParams{
+		ListParams: params.ListParams{StartTime: startTime, EndTime: endTime},
+		ChainIDs:   []string{"cid"},
+	}
+	aggFees, err = reader.TxfeeAggregate(reader.sc.AggregatesCache, &feeAggregateParams)
+	if err != nil {
+		t.Error("error", err)
+	}
+	if aggFees.TxfeeAggregates.Txfee != 25 {
+		t.Errorf("Expected %d tx aggregate fees", 25)
+	}
+	if aggFees.StartTime != startTime || aggFees.EndTime != endTime {
+		t.Error("aggregate tx invalid")
+	}
+	aggregateParams = params.AggregateParams{
+		ListParams: params.ListParams{StartTime: startTime, EndTime: endTime},
+		ChainIDs:   []string{"cid"},
+	}
+	agg, err = reader.Aggregate(reader.sc.AggregatesCache, &aggregateParams)
+	if err != nil {
+		t.Error("error", err)
+	}
+	if agg.Aggregates.TransactionCount != 2 {
+		t.Errorf("Expected %d txs", 2)
+	}
+	if agg.StartTime != startTime || agg.EndTime != endTime {
+		t.Error("aggregate tx invalid")
+	}
+
+	// Test last days' aggregate fees
+	startTime = timeNow.Add(-5 * time.Hour)
+	endTime = timeNow.Add(1 * time.Hour)
+
+	feeAggregateParams = params.TxfeeAggregateParams{
+		ListParams: params.ListParams{StartTime: startTime, EndTime: endTime},
+		ChainIDs:   []string{"cid"},
+	}
+	aggFees, err = reader.TxfeeAggregate(reader.sc.AggregatesCache, &feeAggregateParams)
+	if err != nil {
+		t.Error("error", err)
+	}
+	if aggFees.TxfeeAggregates.Txfee != 10 {
+		t.Errorf("Expected %d tx aggregate fees", 10)
+	}
+	if aggFees.StartTime != startTime || aggFees.EndTime != endTime {
+		t.Error("aggregate tx invalid")
+	}
+	aggregateParams = params.AggregateParams{
+		ListParams: params.ListParams{StartTime: startTime, EndTime: endTime},
+		ChainIDs:   []string{"cid"},
+	}
+	agg, err = reader.Aggregate(reader.sc.AggregatesCache, &aggregateParams)
+	if err != nil {
+		t.Error("error", err)
+	}
+	if agg.Aggregates.TransactionCount != 1 {
+		t.Errorf("Expected %d txs", 1)
+	}
+	if agg.StartTime != startTime || agg.EndTime != endTime {
+		t.Error("aggregate tx invalid")
 	}
 }
 
 func newTestIndex(t *testing.T) (*Reader, func()) {
-	logConf := logging.DefaultConfig
+	logConf := logging.Config{
+		DisplayLevel: logging.Info,
+		LogLevel:     logging.Debug,
+	}
 
 	conf := cfg.Services{
 		Logging: logConf,
@@ -197,14 +381,23 @@ func newTestIndex(t *testing.T) (*Reader, func()) {
 		},
 	}
 
-	sc := &servicesctrl.Control{Log: logging.NoLog{}, Services: conf}
+	chains := cfg.Chains{
+		"cid": {
+			ID:     "cid",
+			VMType: models.AVMName,
+		},
+	}
+
+	sc := &servicesctrl.Control{Log: logging.NoLog{}, Services: conf, Chains: chains}
+	sc.AggregatesCache = caching.NewAggregatesCache()
+	sc.AggregatesCache.InitCacheStorage(chains)
 	conns, err := sc.Database()
 	if err != nil {
 		t.Fatal("Failed to create connections:", err.Error())
 	}
 
 	cmap := make(map[string]services.Consumer)
-	reader, _ := NewReader(5, conns, cmap, nil, sc)
+	reader, _ := NewReader(5, conns, cmap, sc)
 	return reader, func() {
 		_ = conns.Close()
 	}

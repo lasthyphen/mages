@@ -346,13 +346,10 @@ type rewardsTypeModel struct {
 	CreatedAt time.Time        `json:"created_at"`
 }
 
-func newPvmProposerModel(pvmProposer db.PvmProposer) *models.PvmProposerModel {
-	return &models.PvmProposerModel{
-		ID:           models.StringID(pvmProposer.ID),
-		ParentID:     models.StringID(pvmProposer.ParentID),
-		PChainHeight: pvmProposer.PChainHeight,
-		Proposer:     models.StringID(pvmProposer.Proposer),
-		TimeStamp:    pvmProposer.TimeStamp,
+func newBlockProposal(pvmBlock db.PvmBlocks) *models.BlockProposal {
+	return &models.BlockProposal{
+		Proposer:  pvmBlock.Proposer,
+		TimeStamp: pvmBlock.ProposerTime,
 	}
 }
 
@@ -556,28 +553,25 @@ func dressTransactionsTx(
 	}
 }
 
-func resolveProposers(ctx context.Context, dbRunner dbr.SessionRunner, properIds []models.StringID) (map[models.StringID]*models.PvmProposerModel, error) {
-	pvmProposerModels := make(map[models.StringID]*models.PvmProposerModel)
-	if len(properIds) == 0 {
+func resolveProposers(ctx context.Context, dbRunner dbr.SessionRunner, blockIds []models.StringID) (map[models.StringID]*models.BlockProposal, error) {
+	pvmProposerModels := make(map[models.StringID]*models.BlockProposal)
+	if len(blockIds) == 0 {
 		return pvmProposerModels, nil
 	}
-	pvmProposers := []db.PvmProposer{}
-	_, err := dbRunner.Select("id",
-		"parent_id",
-		"blk_id",
-		"p_chain_height",
+	pvmBlocks := []db.PvmBlocks{}
+	_, err := dbRunner.Select(
+		"id",
 		"proposer",
-		"time_stamp",
-		"created_at",
-	).From(db.TablePvmProposer).
-		Where("blk_id in ?", properIds).
-		LoadContext(ctx, &pvmProposers)
+		"proposer_time",
+	).From(db.TablePvmBlocks).
+		Where("id in ?", blockIds).
+		LoadContext(ctx, &pvmBlocks)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, pvmProposer := range pvmProposers {
-		pvmProposerModels[models.StringID(pvmProposer.BlkID)] = newPvmProposerModel(pvmProposer)
+	for _, pvmBlock := range pvmBlocks {
+		pvmProposerModels[models.StringID(pvmBlock.ID)] = newBlockProposal(pvmBlock)
 	}
 	return pvmProposerModels, nil
 }

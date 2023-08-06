@@ -22,12 +22,14 @@ import (
 
 const (
 	AVMName     = "avm"
-	XChainAlias = "x"
+	XChainAlias = "v"
 	PVMName     = "pvm"
-	PChainAlias = "p"
+	PChainAlias = "m"
+	CVMName     = "cvm"
+	CChainAlias = "m"
 )
 
-func newIndexResponse(networkID uint32, xChainID ids.ID, djtxAssetID ids.ID) ([]byte, error) {
+func newIndexResponse(networkID uint32, xChainID, cChainID, djtxAssetID ids.ID) ([]byte, error) {
 	return json.Marshal(&struct {
 		NetworkID uint32                      `json:"network_id"`
 		Chains    map[string]models.ChainInfo `json:"chains"`
@@ -47,6 +49,13 @@ func newIndexResponse(networkID uint32, xChainID ids.ID, djtxAssetID ids.ID) ([]
 				NetworkID:   networkID,
 				DJTXAssetID: models.StringID(djtxAssetID.String()),
 				ID:          models.StringID(ids.Empty.String()),
+			},
+			cChainID.String(): {
+				VM:          CVMName,
+				Alias:       CChainAlias,
+				NetworkID:   networkID,
+				DJTXAssetID: models.StringID(djtxAssetID.String()),
+				ID:          models.StringID(cChainID.String()),
 			},
 		},
 	})

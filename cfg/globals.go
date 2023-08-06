@@ -10,6 +10,7 @@ const (
 	RequestTimeout   = 15 * time.Second
 	HTTPWriteTimeout = 30 * time.Second
 	CacheTimeout     = 3 * time.Second
+	DBTimeout        = 2 * 60 * time.Second
 
 	DefaultConsumeProcessWriteTimeout = 5 * time.Minute
 

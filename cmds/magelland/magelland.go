@@ -15,24 +15,31 @@ import (
 	"syscall"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/lasthyphen/dijetsnodego/utils/logging"
 	"github.com/lasthyphen/mages/api"
 	"github.com/lasthyphen/mages/balance"
+	"github.com/lasthyphen/mages/caching"
 	"github.com/lasthyphen/mages/cfg"
 	"github.com/lasthyphen/mages/db"
 	"github.com/lasthyphen/mages/models"
-	"github.com/lasthyphen/mages/replay"
-	oreliusRpc "github.com/lasthyphen/mages/rpc"
 	"github.com/lasthyphen/mages/services/rewards"
 	"github.com/lasthyphen/mages/servicesctrl"
 	"github.com/lasthyphen/mages/stream"
 	"github.com/lasthyphen/mages/stream/consumers"
 	"github.com/lasthyphen/mages/utils"
 	"github.com/go-sql-driver/mysql"
+	"github.com/golang-migrate/migrate/v4"
 	"github.com/gorilla/rpc/v2"
 	"github.com/gorilla/rpc/v2/json2"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
+
+	magellanRpc "github.com/lasthyphen/mages/rpc"
+	_ "github.com/golang-migrate/migrate/v4/database"
+	_ "github.com/golang-migrate/migrate/v4/database/mysql"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
 const (
@@ -45,9 +52,6 @@ const (
 	streamCmdUse  = "stream"
 	streamCmdDesc = "Runs stream commands"
 
-	streamReplayCmdUse  = "replay"
-	streamReplayCmdDesc = "Runs the replay"
-
 	streamIndexerCmdUse  = "indexer"
 	streamIndexerCmdDesc = "Runs the stream indexer daemon"
 
@@ -56,6 +60,14 @@ const (
 
 	defaultReplayQueueSize    = int(2000)
 	defaultReplayQueueThreads = int(4)
+
+	mysqlMigrationFlag          = "run-mysql-migration"
+	mysqlMigrationFlagShorthand = "m"
+	mysqlMigrationFlagDesc      = "Executes migration scripts for the configured mysql database. This might change the schema, use with caution. For more info on migration have a look at the migrations folder in services/db/migrations/ and check the latest commits"
+
+	mysqlMigrationPathFlag          = "mysql-migration-path"
+	mysqlMigrationPathFlagShorthand = "p"
+	mysqlMigrationPathDefault       = "services/db/migrations"
 )
 
 func main() {
@@ -72,10 +84,13 @@ func execute() error {
 		runErr             error
 		config             = &cfg.Config{}
 		serviceControl     = &servicesctrl.Control{}
+		runMysqlMigration  = func() *bool { s := false; return &s }()
+		mysqlMigrationPath = func() *string { s := mysqlMigrationPathDefault; return &s }()
 		configFile         = func() *string { s := ""; return &s }()
 		replayqueuesize    = func() *int { i := defaultReplayQueueSize; return &i }()
 		replayqueuethreads = func() *int { i := defaultReplayQueueThreads; return &i }()
-		cmd                = &cobra.Command{Use: rootCmdUse, Short: rootCmdDesc, Long: rootCmdDesc,
+		cmd                = &cobra.Command{
+			Use: rootCmdUse, Short: rootCmdDesc, Long: rootCmdDesc,
 			PersistentPreRun: func(cmd *cobra.Command, args []string) {
 				c, err := cfg.NewFromFile(*configFile)
 				if err != nil {
@@ -92,6 +107,14 @@ func execute() error {
 				}
 				_ = mysql.SetLogger(mysqllogger)
 
+				if *runMysqlMigration {
+					dbConfig := c.Services.DB
+					migrationErr := migrateMysql(fmt.Sprintf("%s://%s", dbConfig.Driver, dbConfig.DSN), *mysqlMigrationPath)
+					if migrationErr != nil {
+						log.Fatalf("Failed to run migration: %v", migrationErr)
+					}
+				}
+
 				models.SetBech32HRP(c.NetworkID)
 
 				serviceControl.Log = alog
@@ -102,6 +125,7 @@ func execute() error {
 				serviceControl.Features = c.Features
 				persist := db.NewPersist()
 				serviceControl.BalanceManager = balance.NewManager(persist, serviceControl)
+				serviceControl.AggregatesCache = caching.NewAggregatesCache()
 				err = serviceControl.Init(c.NetworkID)
 				if err != nil {
 					log.Fatalln("Failed to create service control", ":", err.Error())
@@ -113,26 +137,38 @@ func execute() error {
 					sm := http.NewServeMux()
 					sm.Handle("/metrics", promhttp.Handler())
 					go func() {
-						err = http.ListenAndServe(config.MetricsListenAddr, sm)
+						server := &http.Server{
+							Addr:              config.MetricsListenAddr,
+							Handler:           sm,
+							ReadHeaderTimeout: 5 * time.Second,
+						}
+						err = server.ListenAndServe()
 						if err != nil {
 							log.Fatalln("Failed to start metrics listener", err.Error())
 						}
 					}()
-					alog.Info("Starting metrics handler on %s", config.MetricsListenAddr)
+					alog.Info("starting metrics handler",
+						zap.String("addr", config.MetricsListenAddr),
+					)
 				}
 				if config.AdminListenAddr != "" {
 					rpcServer := rpc.NewServer()
 					codec := json2.NewCodec()
 					rpcServer.RegisterCodec(codec, "application/json")
 					rpcServer.RegisterCodec(codec, "application/json;charset=UTF-8")
-					api := oreliusRpc.NewAPI(alog)
+					api := magellanRpc.NewAPI(alog)
 					if err := rpcServer.RegisterService(api, "api"); err != nil {
 						log.Fatalln("Failed to start admin listener", err.Error())
 					}
 					sm := http.NewServeMux()
 					sm.Handle("/api", rpcServer)
 					go func() {
-						err = http.ListenAndServe(config.AdminListenAddr, sm)
+						server := &http.Server{
+							Handler:           sm,
+							Addr:              config.AdminListenAddr,
+							ReadHeaderTimeout: 5 * time.Second,
+						}
+						err = server.ListenAndServe()
 						if err != nil {
 							log.Fatalln("Failed to start metrics listener", err.Error())
 						}
@@ -147,8 +183,11 @@ func execute() error {
 	cmd.PersistentFlags().IntVarP(replayqueuesize, "replayqueuesize", "", defaultReplayQueueSize, fmt.Sprintf("replay queue size default %d", defaultReplayQueueSize))
 	cmd.PersistentFlags().IntVarP(replayqueuethreads, "replayqueuethreads", "", defaultReplayQueueThreads, fmt.Sprintf("replay queue size threads default %d", defaultReplayQueueThreads))
 
+	// migration specific flags
+	cmd.PersistentFlags().BoolVarP(runMysqlMigration, mysqlMigrationFlag, mysqlMigrationFlagShorthand, false, mysqlMigrationFlagDesc)
+	cmd.PersistentFlags().StringVarP(mysqlMigrationPath, mysqlMigrationPathFlag, mysqlMigrationPathFlagShorthand, mysqlMigrationPathDefault, "path for mysql migrations")
+
 	cmd.AddCommand(
-		createReplayCmds(serviceControl, config, &runErr, replayqueuesize, replayqueuethreads),
 		createStreamCmds(serviceControl, config, &runErr),
 		createAPICmds(serviceControl, config, &runErr),
 		createEnvCmds(config, &runErr))
@@ -167,6 +206,12 @@ func createAPICmds(sc *servicesctrl.Control, config *cfg.Config, runErr *error) 
 		Short: apiCmdDesc,
 		Long:  apiCmdDesc,
 		Run: func(cmd *cobra.Command, args []string) {
+			go func() {
+				err := sc.StartCacheScheduler(config)
+				if err != nil {
+					return
+				}
+			}()
 			lc, err := api.NewServer(sc, *config)
 			if err != nil {
 				*runErr = err
@@ -175,23 +220,6 @@ func createAPICmds(sc *servicesctrl.Control, config *cfg.Config, runErr *error) 
 			runListenCloser(lc)
 		},
 	}
-}
-
-func createReplayCmds(sc *servicesctrl.Control, config *cfg.Config, runErr *error, replayqueuesize *int, replayqueuethreads *int) *cobra.Command {
-	replayCmd := &cobra.Command{
-		Use:   streamReplayCmdUse,
-		Short: streamReplayCmdDesc,
-		Long:  streamReplayCmdDesc,
-		Run: func(cmd *cobra.Command, args []string) {
-			replay := replay.NewDB(sc, config, *replayqueuesize, *replayqueuethreads)
-			err := replay.Start()
-			if err != nil {
-				*runErr = err
-			}
-		},
-	}
-
-	return replayCmd
 }
 
 func createStreamCmds(sc *servicesctrl.Control, config *cfg.Config, runErr *error) *cobra.Command {
@@ -223,9 +251,7 @@ func createStreamCmds(sc *servicesctrl.Control, config *cfg.Config, runErr *erro
 					consumers.IndexerDB,
 					consumers.IndexerConsensusDB,
 				},
-				[]stream.ProcessorFactoryInstDB{
-					consumers.IndexerCChainDB(),
-				},
+				[]stream.ProcessorFactoryInstDB{},
 			)(cmd, arg)
 		},
 	})
@@ -235,10 +261,9 @@ func createStreamCmds(sc *servicesctrl.Control, config *cfg.Config, runErr *erro
 
 func producerFactories(sc *servicesctrl.Control, cfg *cfg.Config) []utils.ListenCloser {
 	var factories []utils.ListenCloser
-	factories = append(factories, stream.NewProducerCChain(sc, *cfg))
 	for _, v := range cfg.Chains {
 		switch v.VMType {
-		case consumers.IndexerAVMName:
+		case models.AVMName:
 			p, err := stream.NewProducerChain(sc, *cfg, v.ID, stream.EventTypeDecisions, stream.IndexTypeTransactions, stream.IndexXChain)
 			if err != nil {
 				panic(err)
@@ -249,23 +274,20 @@ func producerFactories(sc *servicesctrl.Control, cfg *cfg.Config) []utils.Listen
 				panic(err)
 			}
 			factories = append(factories, p)
-		case consumers.IndexerPVMName:
+		case models.PVMName:
 			p, err := stream.NewProducerChain(sc, *cfg, v.ID, stream.EventTypeDecisions, stream.IndexTypeBlocks, stream.IndexPChain)
+			if err != nil {
+				panic(err)
+			}
+			factories = append(factories, p)
+		case models.CVMName:
+			p, err := stream.NewProducerChain(sc, *cfg, v.ID, stream.EventTypeDecisions, stream.IndexTypeBlocks, stream.IndexCChain)
 			if err != nil {
 				panic(err)
 			}
 			factories = append(factories, p)
 		}
 	}
-
-	if sc.IsCChainIndex {
-		p, err := stream.NewProducerChain(sc, *cfg, cfg.CchainID, stream.EventTypeDecisions, stream.IndexTypeBlocks, stream.IndexCChain)
-		if err != nil {
-			panic(err)
-		}
-		factories = append(factories, p)
-	}
-
 	return factories
 }
 
@@ -340,7 +362,7 @@ func runStreamProcessorManagers(
 			rh.Close()
 		}()
 
-		err = consumers.Bootstrap(sc, config.NetworkID, config.Chains, consumerFactories)
+		err = consumers.Bootstrap(sc, config.NetworkID, config, consumerFactories)
 		if err != nil {
 			*runError = err
 			return
@@ -398,5 +420,24 @@ type MysqlLogger struct {
 
 func (m *MysqlLogger) Print(v ...interface{}) {
 	s := fmt.Sprint(v...)
-	m.Log.Warn("mysql %s", s)
+	m.Log.Warn("mysql",
+		zap.String("body", s),
+	)
+}
+
+func migrateMysql(mysqlDSN, migrationsPath string) error {
+	migrationSource := fmt.Sprintf("file://%v", migrationsPath)
+	migrater, migraterErr := migrate.New(migrationSource, mysqlDSN)
+	if migraterErr != nil {
+		return migraterErr
+	}
+
+	if err := migrater.Up(); err != nil {
+		if err != migrate.ErrNoChange {
+			return err
+		}
+		log.Println("[mysql]: no new migrations to execute")
+	}
+
+	return nil
 }

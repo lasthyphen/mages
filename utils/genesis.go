@@ -17,13 +17,13 @@ import (
 	"github.com/lasthyphen/dijetsnodego/genesis"
 	"github.com/lasthyphen/dijetsnodego/ids"
 	"github.com/lasthyphen/dijetsnodego/utils/constants"
-	"github.com/lasthyphen/dijetsnodego/vms/platformvm"
+	"github.com/lasthyphen/dijetsnodego/vms/platformvm/txs"
 )
 
 type GenesisContainer struct {
 	NetworkID       uint32
 	Time            uint64
-	XChainGenesisTx *platformvm.Tx
+	XChainGenesisTx *txs.Tx
 	XChainID        ids.ID
 	DjtxAssetID     ids.ID
 	GenesisBytes    []byte

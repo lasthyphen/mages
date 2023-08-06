@@ -33,8 +33,10 @@ const (
 	keysServicesDBDSN    = "dsn"
 	keysServicesDBRODSN  = "ro_dsn"
 
-	keysStreamProducerCaminogo     = "caminogo"
+	keysStreamProducerCaminoNode   = "caminoNode"
 	keysStreamProducerNodeInstance = "nodeInstance"
 
 	keysStreamProducerCchainID = "cchainID"
+
+	keysCacheUpdateInterval = "cacheUpdateInterval"
 )

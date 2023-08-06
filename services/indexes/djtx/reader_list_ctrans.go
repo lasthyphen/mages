@@ -13,13 +13,15 @@ package djtx
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
+	"math/big"
 	"strings"
+	"time"
 
 	"github.com/lasthyphen/coreth/core/types"
 	"github.com/lasthyphen/mages/cfg"
 	"github.com/lasthyphen/mages/db"
 	"github.com/lasthyphen/mages/models"
+	"github.com/lasthyphen/mages/modelsc"
 	"github.com/lasthyphen/mages/services/indexes/params"
 	"github.com/lasthyphen/mages/utils"
 	"github.com/gocraft/dbr/v2"
@@ -34,18 +36,20 @@ func (r *Reader) ListCTransactions(ctx context.Context, p *params.ListCTransacti
 			res.Hash = "0x" + res.Hash
 		}
 		res.Nonce = t.Nonce()
-		if t.GasPrice() != nil {
+		if t.Type() == 0 && t.GasPrice() != nil {
 			str := t.GasPrice().String()
 			res.GasPrice = &str
 		}
 		res.GasLimit = t.Gas()
-		if t.GasFeeCap() != nil {
-			str := t.GasFeeCap().String()
-			res.GasFeeCap = &str
-		}
-		if t.GasTipCap() != nil {
-			str := t.GasTipCap().String()
-			res.GasTipCap = &str
+		if t.Type() > 0 {
+			if t.GasFeeCap() != nil {
+				str := t.GasFeeCap().String()
+				res.GasFeeCap = &str
+			}
+			if t.GasTipCap() != nil {
+				str := t.GasTipCap().String()
+				res.GasTipCap = &str
+			}
 		}
 		if t.To() != nil {
 			str := utils.CommonAddressHexRepair(t.To())
@@ -80,18 +84,24 @@ func (r *Reader) ListCTransactions(ctx context.Context, p *params.ListCTransacti
 		return nil, err
 	}
 
-	var dataList []*db.CvmTransactionsTxdata
+	type TxData struct {
+		Block         string
+		FromAddr      string
+		Serialization []byte
+		Receipt       []byte
+		CreatedAt     time.Time
+	}
+
+	var dataList []*TxData
 
 	sq := dbRunner.Select(
-		"hash",
 		"block",
-		"idx",
-		"from_addr",
-		"to_addr",
-		"nonce",
+		"F.address AS from_addr",
 		"serialization",
+		"receipt",
 		"created_at",
-	).From(db.TableCvmTransactionsTxdata)
+	).From(db.TableCvmTransactionsTxdata).
+		LeftJoin(dbr.I(db.TableCvmAccounts).As("F"), "id_from_addr=id")
 
 	r.listCTransFilter(p, dbRunner, sq)
 	if len(p.Hashes) > 0 {
@@ -106,14 +116,15 @@ func (r *Reader) ListCTransactions(ctx context.Context, p *params.ListCTransacti
 		return nil, err
 	}
 
-	trItemsByHash := make(map[string]*models.CTransactionData)
-
 	trItems := make([]*models.CTransactionData, 0, len(dataList))
-	hashes := make([]string, 0, len(dataList))
-
 	for _, txdata := range dataList {
 		var tr types.Transaction
 		err := tr.UnmarshalJSON(txdata.Serialization)
+		if err != nil {
+			return nil, err
+		}
+		receipt := &modelsc.ExtendedReceipt{}
+		err = receipt.UnmarshalJSON(txdata.Receipt)
 		if err != nil {
 			return nil, err
 		}
@@ -121,17 +132,9 @@ func (r *Reader) ListCTransactions(ctx context.Context, p *params.ListCTransacti
 		ctr.Block = txdata.Block
 		ctr.CreatedAt = txdata.CreatedAt
 		ctr.FromAddr = txdata.FromAddr
+		ctr.Receipt = receipt
 		trItems = append(trItems, ctr)
-
-		trItemsByHash[ctr.Hash] = ctr
-		hashes = append(hashes, ctr.Hash)
 	}
-
-	err = r.getReceipts(ctx, dbRunner, hashes, trItemsByHash)
-	if err != nil {
-		return nil, err
-	}
-
 	listParamsOriginal := p.ListParams
 
 	return &models.CTransactionList{
@@ -157,18 +160,21 @@ func (r *Reader) listCTransFilter(p *params.ListCTransactionsParams, dbRunner *d
 			return b
 		}
 		if p.BlockStart != nil {
-			b.Where(db.TableCvmTransactionsTxdata + ".block >= " + p.BlockStart.String())
+			blockStart := new(big.Int).Mul(p.BlockStart, big.NewInt(1000))
+			b.Where(db.TableCvmTransactionsTxdata + ".block_idx >= " + blockStart.String())
 		}
 		if p.BlockEnd != nil {
-			b.Where(db.TableCvmTransactionsTxdata + ".block <= " + p.BlockEnd.String())
+			blockEnd := new(big.Int).Add(p.BlockEnd, big.NewInt(1))
+			blockEnd.Mul(blockEnd, big.NewInt(1000))
+			b.Where(db.TableCvmTransactionsTxdata + ".block_idx < " + blockEnd.String())
 		}
 		return b
 	}
 
 	if len(p.CAddressesTo) > 0 {
 		subq := createdatefilter(
-			blockfilter(dbRunner.Select(db.TableCvmTransactionsTxdata+".hash").From(db.TableCvmTransactionsTxdata).
-				Where(db.TableCvmTransactionsTxdata+".to_addr in ?", p.CAddressesTo)),
+			blockfilter(dbRunner.Select("hash").From(db.TableCvmTransactionsTxdata).
+				Where("to_addr in ?", p.CAddressesTo)),
 		)
 		sq.
 			Where("hash in ?",
@@ -178,8 +184,8 @@ func (r *Reader) listCTransFilter(p *params.ListCTransactionsParams, dbRunner *d
 
 	if len(p.CAddressesFrom) > 0 {
 		subq := createdatefilter(
-			blockfilter(dbRunner.Select(db.TableCvmTransactionsTxdata+".hash").From(db.TableCvmTransactionsTxdata).
-				Where(db.TableCvmTransactionsTxdata+".from_addr in ?", p.CAddressesFrom)),
+			blockfilter(dbRunner.Select("hash").From(db.TableCvmTransactionsTxdata).
+				Where("from_addr in ?", p.CAddressesFrom)),
 		)
 		sq.
 			Where("hash in ?",
@@ -189,11 +195,11 @@ func (r *Reader) listCTransFilter(p *params.ListCTransactionsParams, dbRunner *d
 
 	if len(p.CAddresses) > 0 {
 		subqfrom := createdatefilter(
-			blockfilter(dbRunner.Select(db.TableCvmTransactionsTxdata+".hash").From(db.TableCvmTransactionsTxdata).
-				Where(".from_addr in ?", p.CAddresses)),
+			blockfilter(dbRunner.Select("hash").From(db.TableCvmTransactionsTxdata).
+				Where("from_addr in ?", p.CAddresses)),
 		)
 		subqto := createdatefilter(
-			blockfilter(dbRunner.Select(db.TableCvmTransactionsTxdata+".hash").From(db.TableCvmTransactionsTxdata).
+			blockfilter(dbRunner.Select("hash").From(db.TableCvmTransactionsTxdata).
 				Where("to_addr in ?", p.CAddresses)),
 		)
 		sq.
@@ -203,30 +209,4 @@ func (r *Reader) listCTransFilter(p *params.ListCTransactionsParams, dbRunner *d
 	}
 
 	blockfilter(sq)
-}
-
-func (r *Reader) getReceipts(ctx context.Context, dbRunner *dbr.Session, hashes []string, trItemsByHash map[string]*models.CTransactionData) error {
-	if len(hashes) == 0 {
-		return nil
-	}
-	var err error
-	var txTransactionReceiptServices []*db.CvmTransactionsReceipt
-	_, err = dbRunner.Select(
-		"serialization",
-	).From(db.TableCvmTransactionsReceipts).
-		Where("hash in ?", hashes).
-		LoadContext(ctx, &txTransactionReceiptServices)
-	if err != nil {
-		return err
-	}
-
-	for _, txTransactionReceiptService := range txTransactionReceiptServices {
-		txTransactionReceiptModel := &types.Receipt{}
-		err = json.Unmarshal(txTransactionReceiptService.Serialization, txTransactionReceiptModel)
-		if err != nil {
-			return err
-		}
-		trItemsByHash[txTransactionReceiptService.Hash].Receipt = txTransactionReceiptModel
-	}
-	return nil
 }

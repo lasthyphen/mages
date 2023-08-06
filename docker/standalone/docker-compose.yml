@@ -10,8 +10,8 @@ services:
   camino:
     env_file:
       - standalone.env
-    image: "c4tplatform/caminogo:v0.1.0"
-    command: /bin/sh -cx "exec /caminogo/build/caminogo
+    image: "c4tplatform/camino-node:v0.2.1-rc1"
+    command: /bin/sh -cx "exec /camino-node/build/camino-node
       --config-file=/opt/config.json
       --network-id=$${NETWORKID}
       "
@@ -20,13 +20,13 @@ services:
     volumes:
       - camino-data:/var/lib/camino
       - ./../caminogo_config.json:/opt/config.json
-      - ./../caminogo_chain_config:/opt/caminogo
+      - ./../caminogo_chain_config:/opt/camino-node
       - camino-ipcs:/tmp
     depends_on:
       - indexer
     restart: always
   indexer: &magellan-app
-    image: "c4tplatform/magellan:v0.0.0"
+    image: "c4tplatform/magellan:v0.2.5"
     command: ["stream", "indexer", "-c", "/opt/config.json"]
     networks:
       - services

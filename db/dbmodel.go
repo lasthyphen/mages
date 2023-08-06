@@ -38,6 +38,7 @@ const (
 	TableCvmBlocks                        = "cvm_blocks"
 	TableCvmTransactionsAtomic            = "cvm_transactions_atomic"
 	TableCvmTransactionsTxdata            = "cvm_transactions_txdata"
+	TableCvmAccounts                      = "cvm_accounts"
 	TablePvmBlocks                        = "pvm_blocks"
 	TableRewards                          = "rewards"
 	TableTransactionsValidator            = "transactions_validator"
@@ -54,18 +55,17 @@ const (
 	TableTransactionsRewardsOwnersOutputs = "transactions_rewards_owners_outputs"
 	TableTxPool                           = "tx_pool"
 	TableKeyValueStore                    = "key_value_store"
-	TableCvmTransactionsReceipts          = "cvm_transactions_receipts"
 	TableNodeIndex                        = "node_index"
-	TablePvmProposer                      = "pvm_proposer"
+	TableCamLastBlockCache                = "cam_last_block_cache"
 )
 
 type Persist interface {
-	QueryTransactionsAtomic(
+	QueryTransactions(
 		context.Context,
 		dbr.SessionRunner,
 		*Transactions,
 	) (*Transactions, error)
-	InsertTransactionsAtomic(
+	InsertTransactions(
 		context.Context,
 		dbr.SessionRunner,
 		*Transactions,
@@ -173,6 +173,23 @@ type Persist interface {
 		*CvmBlocks,
 	) error
 
+	QueryCountLastBlockCache(
+		context.Context,
+		dbr.SessionRunner,
+		*CamLastBlockCache,
+	) (*CountLastBlockCache, error)
+	QueryCamLastBlockCache(
+		context.Context,
+		dbr.SessionRunner,
+		*CamLastBlockCache,
+	) (*CamLastBlockCache, error)
+	InsertCamLastBlockCache(
+		context.Context,
+		dbr.SessionRunner,
+		*CamLastBlockCache,
+		bool,
+	) error
+
 	QueryCvmAddresses(
 		context.Context,
 		dbr.SessionRunner,
@@ -207,6 +224,19 @@ type Persist interface {
 		dbr.SessionRunner,
 		*CvmTransactionsTxdata,
 		bool,
+	) error
+
+	QueryCvmAccount(
+		ctx context.Context,
+		sess dbr.SessionRunner,
+		q *CvmAccount,
+	) (*CvmAccount, error)
+
+	InsertCvmAccount(
+		ctx context.Context,
+		sess dbr.SessionRunner,
+		v *CvmAccount,
+		upd bool,
 	) error
 
 	QueryPvmBlocks(
@@ -394,7 +424,7 @@ type Persist interface {
 		dbr.SessionRunner,
 		*TxPool,
 	) error
-	UpdateTxPoolStatus(
+	RemoveTxPool(
 		context.Context,
 		dbr.SessionRunner,
 		*TxPool,
@@ -409,18 +439,6 @@ type Persist interface {
 		context.Context,
 		dbr.SessionRunner,
 		*KeyValueStore,
-	) error
-
-	QueryCvmTransactionsReceipt(
-		context.Context,
-		dbr.SessionRunner,
-		*CvmTransactionsReceipt,
-	) (*CvmTransactionsReceipt, error)
-	InsertCvmTransactionsReceipt(
-		context.Context,
-		dbr.SessionRunner,
-		*CvmTransactionsReceipt,
-		bool,
 	) error
 
 	QueryNodeIndex(
@@ -439,22 +457,9 @@ type Persist interface {
 		dbr.SessionRunner,
 		*NodeIndex,
 	) error
-
-	QueryPvmProposer(
-		context.Context,
-		dbr.SessionRunner,
-		*PvmProposer,
-	) (*PvmProposer, error)
-	InsertPvmProposer(
-		context.Context,
-		dbr.SessionRunner,
-		*PvmProposer,
-		bool,
-	) error
 }
 
-type persist struct {
-}
+type persist struct{}
 
 func NewPersist() Persist {
 	return &persist{}
@@ -468,6 +473,14 @@ func EventErr(t string, upd bool, err error) error {
 	return fmt.Errorf("%w (%s%s)", err, t, updmsg)
 }
 
+func PrintDbr(d *dbr.SelectStmt) *dbr.SelectStmt {
+	buffer := dbr.NewBuffer()
+	if err := d.Build(d.Dialect, buffer); err == nil {
+		fmt.Println(buffer.String())
+	}
+	return d
+}
+
 type Transactions struct {
 	ID                     string
 	ChainID                string
@@ -477,10 +490,11 @@ type Transactions struct {
 	Txfee                  uint64
 	NetworkID              uint32
 	Genesis                bool
+	Status                 uint8
 	CreatedAt              time.Time
 }
 
-func (p *persist) QueryTransactionsAtomic(
+func (p *persist) QueryTransactions(
 	ctx context.Context,
 	sess dbr.SessionRunner,
 	q *Transactions,
@@ -496,13 +510,14 @@ func (p *persist) QueryTransactionsAtomic(
 		"txfee",
 		"genesis",
 		"network_id",
+		"status",
 	).From(TableTransactions).
 		Where("id=?", q.ID).
 		LoadOneContext(ctx, v)
 	return v, err
 }
 
-func (p *persist) InsertTransactionsAtomic(
+func (p *persist) InsertTransactions(
 	ctx context.Context,
 	sess dbr.SessionRunner,
 	v *Transactions,
@@ -520,6 +535,7 @@ func (p *persist) InsertTransactionsAtomic(
 		Pair("txfee", v.Txfee).
 		Pair("genesis", v.Genesis).
 		Pair("network_id", v.NetworkID).
+		Pair("status", v.Status).
 		ExecContext(ctx)
 	if err != nil && !utils.ErrIsDuplicateEntryError(err) {
 		return EventErr(TableTransactions, false, err)
@@ -535,6 +551,7 @@ func (p *persist) InsertTransactionsAtomic(
 			Set("genesis", v.Genesis).
 			Set("network_id", v.NetworkID).
 			Set("created_at", v.CreatedAt).
+			Set("Status", v.Status).
 			Where("id = ?", v.ID).
 			ExecContext(ctx)
 		if err != nil {
@@ -1058,6 +1075,8 @@ type CvmBlocks struct {
 	AtomicTx      int16
 	Serialization []byte
 	CreatedAt     time.Time
+	Proposer      string
+	ProposerTime  *time.Time
 }
 
 func (p *persist) QueryCvmBlock(
@@ -1074,6 +1093,8 @@ func (p *persist) QueryCvmBlock(
 		"atomic_tx",
 		"serialization",
 		"created_at",
+		"proposer",
+		"proposer_time",
 	).From(TableCvmBlocks).
 		Where("block="+q.Block).
 		LoadOneContext(ctx, v)
@@ -1087,11 +1108,77 @@ func (p *persist) InsertCvmBlocks(
 ) error {
 	var err error
 	_, err = sess.
-		InsertBySql("insert into "+TableCvmBlocks+" (block,hash,chain_id,evm_tx,atomic_tx,serialization,created_at) values("+v.Block+",?,?,?,?,?,?)",
-			v.Hash, v.ChainID, v.EvmTx, v.AtomicTx, v.Serialization, v.CreatedAt).
+		InsertBySql("insert into "+TableCvmBlocks+" (block,hash,chain_id,evm_tx,atomic_tx,serialization,created_at, proposer,proposer_time) values("+v.Block+",?,?,?,?,?,?,?,?)",
+			v.Hash, v.ChainID, v.EvmTx, v.AtomicTx, v.Serialization, v.CreatedAt, v.Proposer, v.ProposerTime).
 		ExecContext(ctx)
 	if err != nil && !utils.ErrIsDuplicateEntryError(err) {
 		return EventErr(TableCvmBlocks, false, err)
+	}
+	return nil
+}
+
+type CamLastBlockCache struct {
+	CurrentBlock string
+	ChainID      string
+}
+
+type CountLastBlockCache struct {
+	Cnt uint64
+}
+
+func (p *persist) QueryCountLastBlockCache(
+	ctx context.Context,
+	sess dbr.SessionRunner,
+	q *CamLastBlockCache,
+) (*CountLastBlockCache, error) {
+	v := &CountLastBlockCache{}
+	err := sess.Select(
+		"count(*) as cnt",
+	).From(TableCamLastBlockCache).
+		Where("chainid=?", q.ChainID).
+		LoadOneContext(ctx, v)
+	return v, err
+}
+
+func (p *persist) QueryCamLastBlockCache(
+	ctx context.Context,
+	sess dbr.SessionRunner,
+	q *CamLastBlockCache,
+) (*CamLastBlockCache, error) {
+	v := &CamLastBlockCache{}
+	err := sess.Select(
+		"current_block",
+		"chainid",
+	).From(TableCamLastBlockCache).
+		Where("chainid=?", q.ChainID).
+		LoadOneContext(ctx, v)
+	return v, err
+}
+
+func (p *persist) InsertCamLastBlockCache(
+	ctx context.Context,
+	sess dbr.SessionRunner,
+	v *CamLastBlockCache,
+	upd bool,
+) error {
+	var err error
+	if upd {
+		_, err = sess.
+			Update(TableCamLastBlockCache).
+			Set("current_block", v.CurrentBlock).
+			Where("chainid = ?", v.ChainID).
+			ExecContext(ctx)
+		if err != nil {
+			return EventErr(TableCamLastBlockCache, true, err)
+		}
+	} else {
+		_, err = sess.
+			InsertBySql("insert into "+TableCamLastBlockCache+" (current_block,chainid) values("+v.CurrentBlock+",?)",
+				v.ChainID).
+			ExecContext(ctx)
+		if err != nil && !utils.ErrIsDuplicateEntryError(err) {
+			return EventErr(TableCamLastBlockCache, false, err)
+		}
 	}
 	return nil
 }
@@ -1231,7 +1318,12 @@ type CvmTransactionsTxdata struct {
 	FromAddr      string
 	ToAddr        string
 	Nonce         uint64
+	Amount        uint64
+	Status        uint16
+	GasUsed       uint64
+	GasPrice      uint64
 	Serialization []byte
+	Receipt       []byte
 	CreatedAt     time.Time
 }
 
@@ -1245,12 +1337,19 @@ func (p *persist) QueryCvmTransactionsTxdata(
 		"hash",
 		"block",
 		"idx",
-		"from_addr",
-		"to_addr",
+		"F.address",
+		"T.address",
 		"nonce",
+		"amount",
+		"status",
+		"gas_used",
+		"gas_price",
 		"serialization",
+		"receipt",
 		"created_at",
 	).From(TableCvmTransactionsTxdata).
+		Join(dbr.I(TableCvmAccounts).As("F"), "F.id=id_from_addr").
+		Join(dbr.I(TableCvmAccounts).As("T"), "T.id=id_to_addr").
 		Where("hash=?", q.Hash).
 		LoadOneContext(ctx, v)
 	return v, err
@@ -1264,20 +1363,96 @@ func (p *persist) InsertCvmTransactionsTxdata(
 ) error {
 	var err error
 	_, err = sess.
-		InsertBySql("insert into "+TableCvmTransactionsTxdata+" (hash,block,idx,from_addr,to_addr,nonce,serialization,created_at) values(?,"+v.Block+",?,?,?,?,?,?)",
-			v.Hash, v.Idx, v.FromAddr, v.ToAddr, v.Nonce, v.Serialization, v.CreatedAt).
+		InsertInto(TableCvmTransactionsTxdata).
+		Pair("hash", v.Hash).
+		Pair("block", v.Block).
+		Pair("idx", v.Idx).
+		Pair("id_from_addr", dbr.Select("id").From(TableCvmAccounts).Where("address=?", v.FromAddr)).
+		Pair("id_to_addr", dbr.Select("id").From(TableCvmAccounts).Where("address=?", v.ToAddr)).
+		Pair("nonce", v.Nonce).
+		Pair("amount", v.Amount).
+		Pair("status", v.Status).
+		Pair("gas_used", v.GasUsed).
+		Pair("gas_price", v.GasPrice).
+		Pair("serialization", v.Serialization).
+		Pair("receipt", v.Receipt).
+		Pair("created_at", v.CreatedAt).
 		ExecContext(ctx)
 	if err != nil && !utils.ErrIsDuplicateEntryError(err) {
 		return EventErr(TableCvmTransactionsTxdata, false, err)
 	}
 	if upd {
 		_, err = sess.
-			UpdateBySql("update "+TableCvmTransactionsTxdata+" set block="+v.Block+",idx=?,from_addr=?,to_addr=?,nonce=?,serialization=?,created_at=? where hash=?",
-				v.Idx, v.FromAddr, v.ToAddr, v.Nonce, v.Serialization, v.CreatedAt, v.Hash).
+			Update(TableCvmTransactionsTxdata).
+			Set("block", v.Block).
+			Set("idx", v.Idx).
+			Set("id_from_addr", dbr.Select("id").From(TableCvmAccounts).Where("address=?", v.FromAddr)).
+			Set("id_to_addr", dbr.Select("id").From(TableCvmAccounts).Where("address=?", v.ToAddr)).
+			Set("nonce", v.Nonce).
+			Set("amount", v.Amount).
+			Set("status", v.Status).
+			Set("gas_used", v.GasUsed).
+			Set("gas_price", v.GasPrice).
+			Set("serialization", v.Serialization).
+			Set("receipt", v.Receipt).
+			Set("created_at", v.CreatedAt).
+			Where("hash=?", v.Hash).
 			ExecContext(ctx)
 		if err != nil {
 			return EventErr(TableCvmTransactionsTxdata, true, err)
 		}
+	}
+	return nil
+}
+
+type CvmAccount struct {
+	ID         uint64
+	Address    string
+	TxCount    uint64
+	CreationTx *string
+}
+
+func (p *persist) QueryCvmAccount(
+	ctx context.Context,
+	sess dbr.SessionRunner,
+	q *CvmAccount,
+) (*CvmAccount, error) {
+	v := &CvmAccount{}
+	err := sess.Select(
+		"id",
+		"tx_count",
+		"creation_tx",
+	).From(TableCvmAccounts).
+		Where("address=?", q.Address).
+		LoadOneContext(ctx, v)
+	return v, err
+}
+
+func (p *persist) InsertCvmAccount(
+	ctx context.Context,
+	sess dbr.SessionRunner,
+	v *CvmAccount,
+	upd bool,
+) error {
+	var err error
+	_, err = sess.
+		InsertInto(TableCvmAccounts).
+		Pair("address", v.Address).
+		Pair("tx_count", v.TxCount).
+		Pair("creation_tx", v.CreationTx).
+		ExecContext(ctx)
+	if err == nil {
+		return nil
+	} else if !upd || !utils.ErrIsDuplicateEntryError(err) {
+		return EventErr(TableCvmAccounts, false, err)
+	}
+	_, err = sess.
+		Update(TableCvmAccounts).
+		IncrBy("tx_count", v.TxCount).
+		Where("address=?", v.Address).
+		ExecContext(ctx)
+	if err != nil {
+		return EventErr(TableCvmAccounts, true, err)
 	}
 	return nil
 }
@@ -1290,6 +1465,8 @@ type PvmBlocks struct {
 	Serialization []byte
 	CreatedAt     time.Time
 	Height        uint64
+	Proposer      string
+	ProposerTime  *time.Time
 }
 
 func (p *persist) QueryPvmBlocks(
@@ -1306,6 +1483,8 @@ func (p *persist) QueryPvmBlocks(
 		"serialization",
 		"created_at",
 		"height",
+		"proposer",
+		"proposer_time",
 	).From(TablePvmBlocks).
 		Where("id=?", q.ID).
 		LoadOneContext(ctx, v)
@@ -1328,6 +1507,8 @@ func (p *persist) InsertPvmBlocks(
 		Pair("created_at", v.CreatedAt).
 		Pair("serialization", v.Serialization).
 		Pair("height", v.Height).
+		Pair("proposer", v.Proposer).
+		Pair("proposer_time", v.ProposerTime).
 		ExecContext(ctx)
 	if err != nil && !utils.ErrIsDuplicateEntryError(err) {
 		return EventErr(TablePvmBlocks, false, err)
@@ -1341,6 +1522,8 @@ func (p *persist) InsertPvmBlocks(
 			Set("serialization", v.Serialization).
 			Set("height", v.Height).
 			Set("created_at", v.CreatedAt).
+			Set("proposer", v.Proposer).
+			Set("proposer_time", v.ProposerTime).
 			Where("id = ?", v.ID).
 			ExecContext(ctx)
 		if err != nil {
@@ -1607,14 +1790,10 @@ type OutputAddressAccumulate struct {
 	CreatedAt       time.Time
 }
 
-func (b *OutputAddressAccumulate) ComputeID() error {
+func (b *OutputAddressAccumulate) ComputeID() {
 	idsv := fmt.Sprintf("%s:%s", b.OutputID, b.Address)
-	id, err := ids.ToID(hashing.ComputeHash256([]byte(idsv)))
-	if err != nil {
-		return err
-	}
+	id := ids.ID(hashing.ComputeHash256Array([]byte(idsv)))
 	b.ID = id.String()
-	return nil
 }
 
 func (p *persist) QueryOutputAddressAccumulateOut(
@@ -1759,14 +1938,10 @@ type OutputTxsAccumulate struct {
 	CreatedAt     time.Time
 }
 
-func (b *OutputTxsAccumulate) ComputeID() error {
+func (b *OutputTxsAccumulate) ComputeID() {
 	idsv := fmt.Sprintf("%s:%s:%s:%s", b.ChainID, b.AssetID, b.Address, b.TransactionID)
-	id, err := ids.ToID(hashing.ComputeHash256([]byte(idsv)))
-	if err != nil {
-		return err
-	}
+	id := ids.ID(hashing.ComputeHash256Array([]byte(idsv)))
 	b.ID = id.String()
-	return nil
 }
 
 func (p *persist) QueryOutputTxsAccumulate(
@@ -1821,14 +1996,10 @@ type AccumulateBalancesAmount struct {
 	UpdatedAt   time.Time
 }
 
-func (b *AccumulateBalancesAmount) ComputeID() error {
+func (b *AccumulateBalancesAmount) ComputeID() {
 	idsv := fmt.Sprintf("%s:%s:%s", b.ChainID, b.AssetID, b.Address)
-	id, err := ids.ToID(hashing.ComputeHash256([]byte(idsv)))
-	if err != nil {
-		return err
-	}
+	id := ids.ID(hashing.ComputeHash256Array([]byte(idsv)))
 	b.ID = id.String()
-	return nil
 }
 
 func (p *persist) QueryAccumulateBalancesReceived(
@@ -1922,14 +2093,10 @@ type AccumulateBalancesTransactions struct {
 	UpdatedAt        time.Time
 }
 
-func (b *AccumulateBalancesTransactions) ComputeID() error {
+func (b *AccumulateBalancesTransactions) ComputeID() {
 	idsv := fmt.Sprintf("%s:%s:%s", b.ChainID, b.AssetID, b.Address)
-	id, err := ids.ToID(hashing.ComputeHash256([]byte(idsv)))
-	if err != nil {
-		return err
-	}
+	id := ids.ID(hashing.ComputeHash256Array([]byte(idsv)))
 	b.ID = id.String()
-	return nil
 }
 
 func (p *persist) QueryAccumulateBalancesTransactions(
@@ -2149,19 +2316,14 @@ type TxPool struct {
 	ChainID       string
 	MsgKey        string
 	Serialization []byte
-	Processed     int
 	Topic         string
 	CreatedAt     time.Time
 }
 
-func (b *TxPool) ComputeID() error {
+func (b *TxPool) ComputeID() {
 	idsv := fmt.Sprintf("%s:%s", b.MsgKey, b.Topic)
-	id, err := ids.ToID(hashing.ComputeHash256([]byte(idsv)))
-	if err != nil {
-		return err
-	}
+	id := ids.ID(hashing.ComputeHash256Array([]byte(idsv)))
 	b.ID = id.String()
-	return nil
 }
 
 func (p *persist) QueryTxPool(
@@ -2176,7 +2338,6 @@ func (p *persist) QueryTxPool(
 		"chain_id",
 		"msg_key",
 		"serialization",
-		"processed",
 		"topic",
 		"created_at",
 	).From(TableTxPool).
@@ -2198,7 +2359,6 @@ func (p *persist) InsertTxPool(
 		Pair("chain_id", v.ChainID).
 		Pair("msg_key", v.MsgKey).
 		Pair("serialization", v.Serialization).
-		Pair("processed", v.Processed).
 		Pair("topic", v.Topic).
 		Pair("created_at", v.CreatedAt).
 		ExecContext(ctx)
@@ -2209,15 +2369,14 @@ func (p *persist) InsertTxPool(
 	return nil
 }
 
-func (p *persist) UpdateTxPoolStatus(
+func (p *persist) RemoveTxPool(
 	ctx context.Context,
 	sess dbr.SessionRunner,
 	v *TxPool,
 ) error {
 	var err error
 	_, err = sess.
-		Update(TableTxPool).
-		Set("processed", v.Processed).
+		DeleteFrom(TableTxPool).
 		Where("id=?", v.ID).
 		ExecContext(ctx)
 	if err != nil && !utils.ErrIsDuplicateEntryError(err) {
@@ -2262,66 +2421,6 @@ func (p *persist) InsertKeyValueStore(
 		return EventErr(TableKeyValueStore, false, err)
 	}
 
-	return nil
-}
-
-type CvmTransactionsReceipt struct {
-	Hash          string
-	Status        uint16
-	GasUsed       uint64
-	Serialization []byte
-	CreatedAt     time.Time
-}
-
-func (p *persist) QueryCvmTransactionsReceipt(
-	ctx context.Context,
-	sess dbr.SessionRunner,
-	q *CvmTransactionsReceipt,
-) (*CvmTransactionsReceipt, error) {
-	v := &CvmTransactionsReceipt{}
-	err := sess.Select(
-		"hash",
-		"status",
-		"gas_used",
-		"serialization",
-		"created_at",
-	).From(TableCvmTransactionsReceipts).
-		Where("hash=?", q.Hash).
-		LoadOneContext(ctx, v)
-	return v, err
-}
-
-func (p *persist) InsertCvmTransactionsReceipt(
-	ctx context.Context,
-	sess dbr.SessionRunner,
-	v *CvmTransactionsReceipt,
-	upd bool,
-) error {
-	var err error
-	_, err = sess.
-		InsertInto(TableCvmTransactionsReceipts).
-		Pair("hash", v.Hash).
-		Pair("status", v.Status).
-		Pair("gas_used", v.GasUsed).
-		Pair("serialization", v.Serialization).
-		Pair("created_at", v.CreatedAt).
-		ExecContext(ctx)
-	if err != nil && !utils.ErrIsDuplicateEntryError(err) {
-		return EventErr(TableCvmTransactionsReceipts, false, err)
-	}
-	if upd {
-		_, err = sess.
-			Update(TableCvmTransactionsReceipts).
-			Set("status", v.Status).
-			Set("gas_used", v.GasUsed).
-			Set("serialization", v.Serialization).
-			Set("created_at", v.CreatedAt).
-			Where("hash=?", v.Hash).
-			ExecContext(ctx)
-		if err != nil {
-			return EventErr(TableCvmTransactionsReceipts, true, err)
-		}
-	}
 	return nil
 }
 
@@ -2405,84 +2504,8 @@ type CvmLogs struct {
 	Serialization []byte
 }
 
-func (b *CvmLogs) ComputeID() error {
+func (b *CvmLogs) ComputeID() {
 	idsv := fmt.Sprintf("%s:%s:%d", b.BlockHash, b.TxHash, b.LogIndex)
-	id, err := ids.ToID(hashing.ComputeHash256([]byte(idsv)))
-	if err != nil {
-		return err
-	}
+	id := ids.ID(hashing.ComputeHash256Array([]byte(idsv)))
 	b.ID = id.String()
-	return nil
-}
-
-type PvmProposer struct {
-	ID            string
-	ParentID      string
-	BlkID         string
-	ProposerBlkID string
-	PChainHeight  uint64
-	Proposer      string
-	TimeStamp     time.Time
-	CreatedAt     time.Time
-}
-
-func (p *persist) QueryPvmProposer(
-	ctx context.Context,
-	sess dbr.SessionRunner,
-	q *PvmProposer,
-) (*PvmProposer, error) {
-	v := &PvmProposer{}
-	err := sess.Select(
-		"id",
-		"parent_id",
-		"blk_id",
-		"p_chain_height",
-		"proposer",
-		"time_stamp",
-		"created_at",
-		"proposer_blk_id",
-	).From(TablePvmProposer).
-		Where("id=?", q.ID).
-		LoadOneContext(ctx, v)
-	return v, err
-}
-
-func (p *persist) InsertPvmProposer(
-	ctx context.Context,
-	sess dbr.SessionRunner,
-	v *PvmProposer,
-	upd bool,
-) error {
-	var err error
-	_, err = sess.
-		InsertInto(TablePvmProposer).
-		Pair("id", v.ID).
-		Pair("parent_id", v.ParentID).
-		Pair("blk_id", v.BlkID).
-		Pair("p_chain_height", v.PChainHeight).
-		Pair("proposer", v.Proposer).
-		Pair("time_stamp", v.TimeStamp).
-		Pair("created_at", v.CreatedAt).
-		Pair("proposer_blk_id", v.ProposerBlkID).
-		ExecContext(ctx)
-	if err != nil && !utils.ErrIsDuplicateEntryError(err) {
-		return EventErr(TablePvmProposer, false, err)
-	}
-	if upd {
-		_, err = sess.
-			Update(TablePvmProposer).
-			Set("parent_id", v.ParentID).
-			Set("blk_id", v.BlkID).
-			Set("p_chain_height", v.PChainHeight).
-			Set("proposer", v.Proposer).
-			Set("time_stamp", v.TimeStamp).
-			Set("created_at", v.CreatedAt).
-			Set("proposer_blk_id", v.ProposerBlkID).
-			Where("id=?", v.ID).
-			ExecContext(ctx)
-		if err != nil {
-			return EventErr(TablePvmProposer, true, err)
-		}
-	}
-	return nil
 }

@@ -15,6 +15,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lasthyphen/dijetsnodego/vms/platformvm/txs"
+
+	"go.uber.org/zap"
+
 	"github.com/lasthyphen/dijetsnodego/api"
 	"github.com/lasthyphen/dijetsnodego/ids"
 	"github.com/lasthyphen/dijetsnodego/utils/formatting"
@@ -62,7 +66,7 @@ func (r *Handler) runTicker(sc *servicesctrl.Control, conns *utils.Connections) 
 	r.doneCh = make(chan struct{}, 1)
 
 	r.conns = conns
-	r.client = platformvm.NewClient(sc.ServicesCfg.CaminoGO)
+	r.client = platformvm.NewClient(sc.ServicesCfg.CaminoNode)
 	r.perist = db.NewPersist()
 
 	r.djtxAssetID = sc.GenesisContainer.DjtxAssetID
@@ -80,7 +84,9 @@ func (r *Handler) runTicker(sc *servicesctrl.Control, conns *utils.Connections) 
 		case <-ticker.C:
 			err := r.processRewards()
 			if err != nil {
-				sc.Log.Error("process rewards %s", err)
+				sc.Log.Error("failed processing rewards",
+					zap.Error(err),
+				)
 			}
 		case <-r.doneCh:
 			return
@@ -172,7 +178,7 @@ func (r *Handler) processRewardUtxos(rewardsUtxos [][]byte, createdAt time.Time)
 
 	for _, reawrdUtxo := range rewardsUtxos {
 		var utxo *caminoGoDjtx.UTXO
-		_, err = platformvm.Codec.Unmarshal(reawrdUtxo, &utxo)
+		_, err = txs.Codec.Unmarshal(reawrdUtxo, &utxo)
 		if err != nil {
 			return err
 		}

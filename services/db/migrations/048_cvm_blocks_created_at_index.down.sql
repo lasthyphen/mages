@@ -1,0 +1,1 @@
+DROP INDEX cvm_blocks_created_at ON cvm_blocks;

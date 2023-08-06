@@ -17,7 +17,10 @@ type MockPersist struct {
 	OutputsRedeeming                 map[string]*OutputsRedeeming
 	CvmTransactionsAtomic            map[string]*CvmTransactionsAtomic
 	CvmTransactionsTxdata            map[string]*CvmTransactionsTxdata
+	CvmAccounts                      map[string]*CvmAccount
 	CvmBlocks                        map[string]*CvmBlocks
+	CamLastBlockCache                map[string]*CamLastBlockCache
+	CountLastBlockCache              map[string]*CountLastBlockCache
 	CvmAddresses                     map[string]*CvmAddresses
 	TransactionsValidator            map[string]*TransactionsValidator
 	TransactionsBlock                map[string]*TransactionsBlock
@@ -40,9 +43,7 @@ type MockPersist struct {
 	TransactionsRewardsOwners        map[string]*TransactionsRewardsOwners
 	TxPool                           map[string]*TxPool
 	KeyValueStore                    map[string]*KeyValueStore
-	CvmTransactionsReceipt           map[string]*CvmTransactionsReceipt
 	NodeIndex                        map[string]*NodeIndex
-	PvmProposer                      map[string]*PvmProposer
 }
 
 func NewPersistMock() *MockPersist {
@@ -52,7 +53,9 @@ func NewPersistMock() *MockPersist {
 		OutputsRedeeming:                 make(map[string]*OutputsRedeeming),
 		CvmTransactionsAtomic:            make(map[string]*CvmTransactionsAtomic),
 		CvmTransactionsTxdata:            make(map[string]*CvmTransactionsTxdata),
+		CvmAccounts:                      make(map[string]*CvmAccount),
 		CvmBlocks:                        make(map[string]*CvmBlocks),
+		CamLastBlockCache:                make(map[string]*CamLastBlockCache),
 		CvmAddresses:                     make(map[string]*CvmAddresses),
 		TransactionsValidator:            make(map[string]*TransactionsValidator),
 		TransactionsBlock:                make(map[string]*TransactionsBlock),
@@ -75,13 +78,11 @@ func NewPersistMock() *MockPersist {
 		TransactionsRewardsOwnersOutputs: make(map[string]*TransactionsRewardsOwnersOutputs),
 		TxPool:                           make(map[string]*TxPool),
 		KeyValueStore:                    make(map[string]*KeyValueStore),
-		CvmTransactionsReceipt:           make(map[string]*CvmTransactionsReceipt),
 		NodeIndex:                        make(map[string]*NodeIndex),
-		PvmProposer:                      make(map[string]*PvmProposer),
 	}
 }
 
-func (m *MockPersist) QueryTransactionsAtomic(ctx context.Context, runner dbr.SessionRunner, v *Transactions) (*Transactions, error) {
+func (m *MockPersist) QueryTransactions(ctx context.Context, runner dbr.SessionRunner, v *Transactions) (*Transactions, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 	if v, present := m.Transactions[v.ID]; present {
@@ -90,7 +91,7 @@ func (m *MockPersist) QueryTransactionsAtomic(ctx context.Context, runner dbr.Se
 	return nil, nil
 }
 
-func (m *MockPersist) InsertTransactionsAtomic(ctx context.Context, runner dbr.SessionRunner, v *Transactions, b bool) error {
+func (m *MockPersist) InsertTransactions(ctx context.Context, runner dbr.SessionRunner, v *Transactions, b bool) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	nv := &Transactions{}
@@ -252,6 +253,38 @@ func (m *MockPersist) InsertCvmBlocks(ctx context.Context, runner dbr.SessionRun
 	return nil
 }
 
+// this mock needs to be enriched
+func (m *MockPersist) QueryCountLastBlockCache(ctx context.Context, runner dbr.SessionRunner, v *CamLastBlockCache) (*CountLastBlockCache, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	if _, present := m.CamLastBlockCache[v.ChainID]; present {
+		cnt := &CountLastBlockCache{
+			Cnt: 1,
+		}
+		return cnt, nil
+	}
+	return &CountLastBlockCache{}, nil
+}
+
+func (m *MockPersist) QueryCamLastBlockCache(ctx context.Context, runner dbr.SessionRunner, v *CamLastBlockCache) (*CamLastBlockCache, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	if v, present := m.CamLastBlockCache[v.ChainID]; present {
+		return v, nil
+	}
+	return nil, nil
+}
+
+func (m *MockPersist) InsertCamLastBlockCache(ctx context.Context, runner dbr.SessionRunner, v *CamLastBlockCache, flag bool) error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	nv := &CamLastBlockCache{}
+	*nv = *v
+	m.CamLastBlockCache[v.CurrentBlock] = nv
+	return nil
+}
+
 func (m *MockPersist) QueryCvmAddresses(ctx context.Context, runner dbr.SessionRunner, v *CvmAddresses) (*CvmAddresses, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
@@ -303,6 +336,24 @@ func (m *MockPersist) InsertCvmTransactionsTxdata(ctx context.Context, runner db
 	nv := &CvmTransactionsTxdata{}
 	*nv = *v
 	m.CvmTransactionsTxdata[v.Hash] = nv
+	return nil
+}
+
+func (m *MockPersist) QueryCvmAccount(ctx context.Context, runner dbr.SessionRunner, v *CvmAccount) (*CvmAccount, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	if v, present := m.CvmAccounts[v.Address]; present {
+		return v, nil
+	}
+	return nil, nil
+}
+
+func (m *MockPersist) InsertCvmAccount(ctx context.Context, runner dbr.SessionRunner, v *CvmAccount, b bool) error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	nv := &CvmAccount{}
+	*nv = *v
+	m.CvmAccounts[v.Address] = nv
 	return nil
 }
 
@@ -596,12 +647,10 @@ func (m *MockPersist) InsertTxPool(ctx context.Context, runner dbr.SessionRunner
 	return nil
 }
 
-func (m *MockPersist) UpdateTxPoolStatus(ctx context.Context, runner dbr.SessionRunner, v *TxPool) error {
+func (m *MockPersist) RemoveTxPool(ctx context.Context, runner dbr.SessionRunner, v *TxPool) error {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	if fv, present := m.TxPool[v.ID]; present {
-		fv.Processed = v.Processed
-	}
+	delete(m.TxPool, v.ID)
 	return nil
 }
 
@@ -620,24 +669,6 @@ func (m *MockPersist) InsertKeyValueStore(ctx context.Context, runner dbr.Sessio
 	nv := &KeyValueStore{}
 	*nv = *v
 	m.KeyValueStore[v.K] = nv
-	return nil
-}
-
-func (m *MockPersist) QueryCvmTransactionsReceipt(ctx context.Context, runner dbr.SessionRunner, v *CvmTransactionsReceipt) (*CvmTransactionsReceipt, error) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	if v, present := m.CvmTransactionsReceipt[v.Hash]; present {
-		return v, nil
-	}
-	return nil, nil
-}
-
-func (m *MockPersist) InsertCvmTransactionsReceipt(ctx context.Context, runner dbr.SessionRunner, v *CvmTransactionsReceipt, _ bool) error {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	nv := &CvmTransactionsReceipt{}
-	*nv = *v
-	m.CvmTransactionsReceipt[v.Hash] = nv
 	return nil
 }
 
@@ -665,23 +696,5 @@ func (m *MockPersist) UpdateNodeIndex(ctx context.Context, runner dbr.SessionRun
 	if fv, present := m.NodeIndex[v.Topic]; present {
 		fv.Idx = v.Idx
 	}
-	return nil
-}
-
-func (m *MockPersist) QueryPvmProposer(ctx context.Context, runner dbr.SessionRunner, v *PvmProposer) (*PvmProposer, error) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	if v, present := m.PvmProposer[v.ID]; present {
-		return v, nil
-	}
-	return nil, nil
-}
-
-func (m *MockPersist) InsertPvmProposer(ctx context.Context, runner dbr.SessionRunner, v *PvmProposer, _ bool) error {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	nv := &PvmProposer{}
-	*nv = *v
-	m.PvmProposer[v.ID] = nv
 	return nil
 }
