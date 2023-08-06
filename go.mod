@@ -3,13 +3,13 @@ module github.com/lasthyphen/mages
 go 1.18
 
 require (
-	github.com/lasthyphen/dijetsnodego v1.8.14
-	github.com/lasthyphen/coreth v0.16.0
 	github.com/ethereum/go-ethereum v1.10.26
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/gocraft/dbr/v2 v2.7.2
 	github.com/gocraft/web v0.0.0-20190207150652-9707327fb69b
 	github.com/gorilla/rpc v1.2.0
+	github.com/lasthyphen/coreth v0.16.0
+	github.com/lasthyphen/dijetsnodego v1.8.14
 	github.com/neilotoole/errgroup v0.1.6
 	github.com/palantir/stacktrace v0.0.0-20161112013806-78658fd2d177
 	github.com/prometheus/client_golang v1.13.0
@@ -22,7 +22,6 @@ require (
 require (
 	github.com/FactomProject/btcutilecc v0.0.0-20130527213604-d3a63a5752ec // indirect
 	github.com/aead/siphash v1.0.1 // indirect
-	github.com/lasthyphen/djiets-ledger-go v0.0.19 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.2.0 // indirect
 	github.com/btcsuite/btcd/btcutil v1.1.1 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.0.1 // indirect
@@ -43,6 +42,7 @@ require (
 	github.com/jessevdk/go-flags v1.5.0 // indirect
 	github.com/jrick/logrotate v1.0.0 // indirect
 	github.com/kkdai/bstream v1.0.0 // indirect
+	github.com/lasthyphen/djiets-ledger-go v0.0.19 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/supranational/blst v0.3.11-0.20220920110316-f72618070295 // indirect
@@ -59,7 +59,6 @@ require (
 	go.opentelemetry.io/proto/otlp v0.19.0 // indirect
 	go.uber.org/atomic v1.10.0 // indirect
 	go.uber.org/multierr v1.8.0 // indirect
-	go.uber.org/zap v1.23.0 // indirect
 	golang.org/x/exp v0.0.0-20220426173459-3bcf042a4bf5 // indirect
 	golang.org/x/net v0.1.0 // indirect
 	google.golang.org/genproto v0.0.0-20221027153422-115e99e71e1c // indirect
